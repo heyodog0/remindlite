@@ -14,9 +14,10 @@ struct TaskItem: Identifiable, Equatable {
     let completed: Bool
     let completionDate: Date?
 
-    static func == (a: TaskItem, b: TaskItem) -> Bool {
-        a.id == b.id && a.completed == b.completed && a.listColor == b.listColor
-    }
+    // Equatable is synthesized over *all* fields so SwiftUI redraws a row when
+    // any visible field changes (title, notes, due, priority, …). A hand-written
+    // == that only compared id/completed/color silently dropped title/date/notes
+    // edits — the change saved to Reminders but the row never refreshed.
 
     /// Copy moved to a different list (for an optimistic "move to list").
     func withList(_ list: ReminderList) -> TaskItem {
