@@ -90,56 +90,9 @@ final class RemindersStore {
         DispatchQueue.main.async { done() }
     }
 
-    /// All reminder lists, sorted by name. (EventKit reminder calendars.)
-    func lists() -> [ReminderList] {
-        store.calendars(for: .reminder).map { cal in
-            ReminderList(id: cal.calendarIdentifier,
-                         name: cal.title,
-                         color: Color(cgColor: cal.cgColor))
-        }
-        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-
-    /// Identifier of the list new reminders default to.
-    func defaultListID() -> String? {
-        store.defaultCalendarForNewReminders()?.calendarIdentifier
-    }
-
-    /// Create a new reminder list with a color. Returns the id (or nil) on main.
-    func createList(name: String, color: Color, _ done: @escaping (String?) -> Void) {
-        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !n.isEmpty else { done(nil); return }
-        let cal = EKCalendar(for: .reminder, eventStore: store)
-        cal.title = n
-        cal.cgColor = NSColor(color).cgColor
-        // Put it in the same source as the default list (e.g. iCloud), falling
-        // back to a local/CalDAV source.
-        cal.source = store.defaultCalendarForNewReminders()?.source
-            ?? store.sources.first { $0.sourceType == .local }
-            ?? store.sources.first { $0.sourceType == .calDAV }
-            ?? store.sources.first
-        do {
-            try store.saveCalendar(cal, commit: true)
-            DispatchQueue.main.async { done(cal.calendarIdentifier) }
-        } catch {
-            NSLog("RemindLite: create list failed: \(error.localizedDescription)")
-            DispatchQueue.main.async { done(nil) }
-        }
-    }
-
-    /// Move a reminder to another list (calendar) by identifier. Main thread.
-    func move(_ id: String, toListID listID: String, _ done: @escaping () -> Void) {
-        if let r = store.calendarItem(withIdentifier: id) as? EKReminder,
-           let cal = store.calendar(withIdentifier: listID) {
-            r.calendar = cal
-            try? store.save(r, commit: true)
-        }
-        DispatchQueue.main.async { done() }
-    }
-
     /// Update a reminder's editable fields and commit. `done` runs on main.
     func update(id: String, title: String, notes: String, due: Date?, hasTime: Bool,
-                priority: Int, listID: String, _ done: @escaping () -> Void) {
+                priority: Int, _ done: @escaping () -> Void) {
         guard let r = store.calendarItem(withIdentifier: id) as? EKReminder else { done(); return }
         r.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         r.notes = notes.isEmpty ? nil : notes
@@ -154,7 +107,6 @@ final class RemindersStore {
         } else {
             r.dueDateComponents = nil
         }
-        if let cal = store.calendar(withIdentifier: listID) { r.calendar = cal }
         try? store.save(r, commit: true)
         DispatchQueue.main.async { done() }
     }
@@ -167,11 +119,10 @@ final class RemindersStore {
         DispatchQueue.main.async { done() }
     }
 
-    /// Create a new reminder in the given list (or the default). `done` on main.
-    func add(title: String, listID: String?, _ done: @escaping () -> Void) {
+    /// Create a new reminder in the default list. `done` on main.
+    func add(title: String, _ done: @escaping () -> Void) {
         let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cal = listID.flatMap { store.calendar(withIdentifier: $0) }
-            ?? store.defaultCalendarForNewReminders()
+        let cal = store.defaultCalendarForNewReminders()
         guard !t.isEmpty, let cal else { done(); return }
         let r = EKReminder(eventStore: store)
         r.title = t
@@ -189,17 +140,12 @@ final class RemindersStore {
             hasTime = comps.hour != nil
             due = Calendar.current.date(from: comps)
         }
-        let cg = r.calendar?.cgColor
-        let color = cg.map { Color(cgColor: $0) } ?? .secondary
         return TaskItem(
             id: r.calendarItemIdentifier,
             title: r.title ?? "Untitled",
             due: due,
             hasTime: hasTime,
             priority: r.priority,
-            listID: r.calendar?.calendarIdentifier ?? "",
-            listName: r.calendar?.title ?? "",
-            listColor: color,
             notes: r.notes,
             completed: r.isCompleted,
             completionDate: r.completionDate)

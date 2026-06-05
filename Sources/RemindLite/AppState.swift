@@ -18,17 +18,6 @@ final class AppState: ObservableObject {
     /// Natural (ideal) height of the panel content; the window is sized to it.
     @Published var panelContentHeight: CGFloat = 0
 
-    /// Reminder lists (Apple Reminders "lists" / EventKit calendars) and the
-    /// list new reminders are added to.
-    @Published var lists: [ReminderList] = []
-    @Published var addListID: String?
-
-    /// Inline new-list form state.
-    @Published var creatingList = false
-    @Published var newListName = ""
-    @Published var newListColorID = 4
-    private var pendingMoveItem: TaskItem?
-
     /// Task-editor state. `editingID != nil` shows the detail/edit view.
     @Published var editingID: String?
     @Published var editTitle = ""
@@ -37,7 +26,6 @@ final class AppState: ObservableObject {
     @Published var editDue = Date()
     @Published var editHasTime = true
     @Published var editPriority = 0       // 0 none, 1 high, 5 medium, 9 low
-    @Published var editListID = ""
 
     /// How many days of events to show in the Calendar tab.
     let eventWindowDays = 7
@@ -105,7 +93,6 @@ final class AppState: ObservableObject {
     func refresh() {
         access = store.access
         guard access == .granted else { return }
-        loadLists()
         store.fetchAll { [weak self] items in
             guard let self else { return }
             self.tasks = items
@@ -116,17 +103,6 @@ final class AppState: ObservableObject {
             }
         }
     }
-
-    /// Refresh the available reminder lists; default the add-target if unset.
-    func loadLists() {
-        lists = store.lists()
-        if addListID == nil || !lists.contains(where: { $0.id == addListID }) {
-            addListID = store.defaultListID() ?? lists.first?.id
-        }
-    }
-
-    /// The list new reminders go into (resolved object, for the swatch UI).
-    var addList: ReminderList? { lists.first { $0.id == addListID } }
 
     /// Effective completed state: the optimistic override if any, else the store.
     func isCompleted(_ item: TaskItem) -> Bool { optimistic[item.id] ?? item.completed }
@@ -141,7 +117,7 @@ final class AppState: ObservableObject {
     func add() {
         let text = draft
         draft = ""
-        store.add(title: text, listID: addListID) { [weak self] in self?.refresh() }
+        store.add(title: text) { [weak self] in self?.refresh() }
     }
 
     /// Delete a reminder, optimistically removing it from the list first.
@@ -151,16 +127,7 @@ final class AppState: ObservableObject {
         store.delete(item.id) { [weak self] in self?.refresh() }
     }
 
-    /// Move a reminder to a different list, updating the in-memory row first so
-    /// its accent color changes instantly.
-    func move(_ item: TaskItem, toList list: ReminderList) {
-        if let idx = tasks.firstIndex(where: { $0.id == item.id }) {
-            tasks[idx] = tasks[idx].withList(list)
-        }
-        store.move(item.id, toListID: list.id) { [weak self] in self?.refresh() }
-    }
-
-    // MARK: - task editor (notes / dates / priority / list)
+    // MARK: - task editor (notes / dates / priority)
 
     /// Open the editor for a task, populating the draft fields from it.
     func beginEdit(_ item: TaskItem) {
@@ -170,7 +137,6 @@ final class AppState: ObservableObject {
         editDue = item.due ?? defaultDueDate()
         editHasTime = item.hasTime
         editPriority = item.priority
-        editListID = item.listID.isEmpty ? (addListID ?? "") : item.listID
         editingID = item.id
     }
 
@@ -181,7 +147,7 @@ final class AppState: ObservableObject {
         editingID = nil
         store.update(id: id, title: editTitle, notes: editNotes,
                      due: editHasDue ? editDue : nil, hasTime: editHasTime,
-                     priority: editPriority, listID: editListID) { [weak self] in
+                     priority: editPriority) { [weak self] in
             self?.refresh()
         }
     }
@@ -195,45 +161,10 @@ final class AppState: ObservableObject {
         delete(item)
     }
 
-    /// The list selected in the editor (for the picker label).
-    var editList: ReminderList? { lists.first { $0.id == editListID } }
-
     private func defaultDueDate() -> Date {
         // Today at 9:00 AM (a sensible default when turning a due date on).
         let cal = Calendar.current
         return cal.date(bySettingHour: 9, minute: 0, second: 0, of: Date()) ?? Date()
-    }
-
-    // MARK: - inline "new list" creation
-
-    /// Open the inline new-list form. If `move` is given, the created list will
-    /// also become that task's list; otherwise it becomes the add-target.
-    func beginNewList(move item: TaskItem? = nil) {
-        newListName = ""
-        newListColorID = 4               // default Blue
-        pendingMoveItem = item
-        creatingList = true
-    }
-
-    func cancelNewList() {
-        creatingList = false
-        pendingMoveItem = nil
-    }
-
-    /// Create the list with the chosen name + color, then select it (or move the
-    /// pending task into it). All inline — no popup window.
-    func confirmNewList() {
-        let color = reminderPalette.first { $0.id == newListColorID }?.color ?? .blue
-        let item = pendingMoveItem
-        creatingList = false
-        pendingMoveItem = nil
-        store.createList(name: newListName, color: color) { [weak self] id in
-            guard let self else { return }
-            self.loadLists()
-            guard let id, let list = self.lists.first(where: { $0.id == id }) else { return }
-            if let item { self.move(item, toList: list) }
-            else { self.addListID = id }
-        }
     }
 
     func openRemindersApp() {

@@ -7,50 +7,15 @@ struct TaskItem: Identifiable, Equatable {
     let due: Date?          // resolved start-of-day or date+time, nil if undated
     let hasTime: Bool       // due includes a clock time (vs. all-day)
     let priority: Int       // 0 none, 1 high … 9 low (EventKit convention)
-    let listID: String
-    let listName: String
-    let listColor: Color
     let notes: String?
     let completed: Bool
     let completionDate: Date?
 
     // Equatable is synthesized over *all* fields so SwiftUI redraws a row when
     // any visible field changes (title, notes, due, priority, …). A hand-written
-    // == that only compared id/completed/color silently dropped title/date/notes
-    // edits — the change saved to Reminders but the row never refreshed.
-
-    /// Copy moved to a different list (for an optimistic "move to list").
-    func withList(_ list: ReminderList) -> TaskItem {
-        TaskItem(id: id, title: title, due: due, hasTime: hasTime, priority: priority,
-                 listID: list.id, listName: list.name, listColor: list.color, notes: notes,
-                 completed: completed, completionDate: completionDate)
-    }
+    // == that only compared id/completed silently dropped title/date/notes edits
+    // — the change saved to Reminders but the row never refreshed.
 }
-
-/// An Apple Reminders list (an EventKit reminder calendar).
-struct ReminderList: Identifiable, Equatable {
-    let id: String
-    let name: String
-    let color: Color
-}
-
-/// A preset list color, mirroring the Reminders app's palette.
-struct ListColorOption: Identifiable, Equatable {
-    let id: Int
-    let name: String
-    let color: Color
-}
-
-let reminderPalette: [ListColorOption] = [
-    .init(id: 0, name: "Red",    color: Color(red: 1.00, green: 0.27, blue: 0.23)),
-    .init(id: 1, name: "Orange", color: Color(red: 1.00, green: 0.58, blue: 0.00)),
-    .init(id: 2, name: "Yellow", color: Color(red: 1.00, green: 0.80, blue: 0.00)),
-    .init(id: 3, name: "Green",  color: Color(red: 0.30, green: 0.85, blue: 0.39)),
-    .init(id: 4, name: "Blue",   color: Color(red: 0.00, green: 0.48, blue: 1.00)),
-    .init(id: 5, name: "Purple", color: Color(red: 0.69, green: 0.32, blue: 0.87)),
-    .init(id: 6, name: "Pink",   color: Color(red: 1.00, green: 0.18, blue: 0.57)),
-    .init(id: 7, name: "Brown",  color: Color(red: 0.64, green: 0.52, blue: 0.37)),
-]
 
 /// One calendar event, flattened from EventKit so the UI never touches EKEvent.
 /// (Includes any Google calendars synced into Apple Calendar via CalDAV.)

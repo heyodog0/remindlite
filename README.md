@@ -9,9 +9,10 @@ SwiftUI + AppKit + EventKit, real Liquid Glass, no dependencies.
 - **Two tabs** — a segmented **Reminders / Calendar** switch at the top of the
   glass panel.
 - **Reminders** — grouped into **Overdue · Today · Upcoming · No Date**, sorted by
-  due date then priority, color-dotted per list, with a **Completed** section for
-  what you finished today. Tap a circle to check (or un-check) a task — it commits
-  to Reminders instantly. Quick-add a new one from the field at the bottom.
+  due date then priority, with a **Completed** section for what you finished today.
+  Tap a circle to check (or un-check) a task — it commits to Reminders instantly.
+  Tap a task to edit its title, notes, due date, and priority. Quick-add a new one
+  from the field at the bottom (it goes to your default Reminders list).
 - **Calendar** — your next 7 days of events, grouped by day (**Today · Tomorrow ·
   …**) with times, locations, and per-calendar color bars. Reads Apple Calendar
   via EventKit, which **includes any Google calendars** you've synced into macOS
