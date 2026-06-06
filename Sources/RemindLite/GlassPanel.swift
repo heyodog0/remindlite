@@ -50,6 +50,13 @@ final class GlassPanel: NSPanel {
 
         host.frame = glass.bounds
         host.autoresizingMask = [.width, .height]
+        // Opt the hosting view OUT of driving the window size. By default
+        // NSHostingView reports a fitting size and resizes its window to match;
+        // with our top-anchored `maxHeight: .infinity` content that fitting size
+        // runs tall and fought our manual setFrame — the window oscillated ~120pt
+        // above the measured content (the blank-margin bug). We size the window
+        // ourselves from panelContentHeight, so the host should only fill.
+        host.sizingOptions = []
         host.layer?.backgroundColor = .clear
         glass.contentView = host
 
