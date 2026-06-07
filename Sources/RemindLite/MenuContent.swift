@@ -358,10 +358,52 @@ private struct AddField: View {
 /// reminders list when a task is tapped.
 private struct TaskDetail: View {
     @EnvironmentObject var state: AppState
+    @State private var showCalendar = false
     private let field = RoundedRectangle(cornerRadius: 10, style: .continuous)
+    private let pickShape = RoundedRectangle(cornerRadius: 7, style: .continuous)
 
     private var canSave: Bool {
         !state.editTitle.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    // MARK: due-date helpers
+    private var cal: Calendar { .current }
+    private var today: Date { cal.startOfDay(for: Date()) }
+    private var tomorrow: Date { cal.date(byAdding: .day, value: 1, to: today) ?? today }
+    private var nextWeek: Date { cal.date(byAdding: .day, value: 7, to: today) ?? today }
+
+    /// Set the due day, keeping the current time-of-day so the Time toggle stays
+    /// meaningful.
+    private func pick(_ day: Date) {
+        let t = cal.dateComponents([.hour, .minute], from: state.editDue)
+        var c = cal.dateComponents([.year, .month, .day], from: day)
+        c.hour = t.hour ?? 9; c.minute = t.minute ?? 0
+        if let d = cal.date(from: c) { state.editDue = d }
+    }
+
+    private func isPicked(_ day: Date) -> Bool { cal.isDate(state.editDue, inSameDayAs: day) }
+
+    private var chipText: String {
+        let df = DateFormatter(); df.dateFormat = "MMM d, yyyy"
+        let s = df.string(from: state.editDue)
+        guard state.editHasTime else { return s }
+        let tf = DateFormatter(); tf.timeStyle = .short; tf.dateStyle = .none
+        return "\(s)  ·  \(tf.string(from: state.editDue))"
+    }
+
+    @ViewBuilder
+    private func quickPick(_ title: String, _ day: Date) -> some View {
+        let on = isPicked(day)
+        Button { pick(day) } label: {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 5)
+                .foregroundStyle(on ? Color.white : .primary)
+                .background(pickShape.fill(on ? Color.blue.opacity(0.85) : .white.opacity(0.06)))
+                .overlay(pickShape.strokeBorder(.white.opacity(on ? 0 : 0.10), lineWidth: 0.8))
+        }
+        .buttonStyle(.plain)
     }
 
     var body: some View {
@@ -400,7 +442,8 @@ private struct TaskDetail: View {
             .background(field.fill(.white.opacity(0.05)))
             .overlay(field.strokeBorder(.white.opacity(0.08), lineWidth: 0.8))
 
-            // Due date — one compact row + an inline picker when enabled.
+            // Due date — quick picks for the common cases + a chip that opens a
+            // real month calendar (no stuck blue digit highlight like .field).
             VStack(spacing: 8) {
                 HStack {
                     Label("Due Date", systemImage: "calendar")
@@ -410,14 +453,36 @@ private struct TaskDetail: View {
                         .toggleStyle(.switch).controlSize(.mini).labelsHidden()
                 }
                 if state.editHasDue {
+                    HStack(spacing: 6) {
+                        quickPick("Today", today)
+                        quickPick("Tomorrow", tomorrow)
+                        quickPick("Next Week", nextWeek)
+                    }
                     HStack(spacing: 8) {
-                        // .compact: a tappable chip that drops a calendar popover.
-                        // Unlike .field it doesn't leave a component highlighted
-                        // blue after you pick, and you click a day instead of
-                        // typing each segment.
-                        DatePicker("", selection: $state.editDue,
-                                   displayedComponents: state.editHasTime ? [.date, .hourAndMinute] : [.date])
-                            .datePickerStyle(.compact).labelsHidden()
+                        Button {
+                            state.autoCloseSuppressed = true   // keep panel open for the popover
+                            showCalendar = true
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text(chipText).font(.system(size: 12, weight: .medium))
+                                Image(systemName: "calendar").font(.system(size: 11))
+                            }
+                            .foregroundStyle(.primary)
+                            .padding(.vertical, 5).padding(.horizontal, 9)
+                            .background(pickShape.fill(.white.opacity(0.08)))
+                            .overlay(pickShape.strokeBorder(.white.opacity(0.12), lineWidth: 0.8))
+                        }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: $showCalendar, arrowEdge: .bottom) {
+                            DatePicker("", selection: $state.editDue,
+                                       displayedComponents: state.editHasTime ? [.date, .hourAndMinute] : [.date])
+                                .datePickerStyle(.graphical)
+                                .labelsHidden()
+                                .tint(.blue)
+                                .environment(\.colorScheme, .dark)
+                                .padding(12)
+                                .frame(width: 260)
+                        }
                         Spacer()
                         Toggle("Time", isOn: $state.editHasTime.animation(.easeInOut(duration: 0.15)))
                             .toggleStyle(.switch).controlSize(.mini)
@@ -428,6 +493,10 @@ private struct TaskDetail: View {
             .padding(.vertical, 9).padding(.horizontal, 10)
             .background(field.fill(.white.opacity(0.05)))
             .overlay(field.strokeBorder(.white.opacity(0.08), lineWidth: 0.8))
+            // Re-arm auto-close once the calendar popover is dismissed.
+            .onChange(of: showCalendar) { _, open in
+                if !open { state.autoCloseSuppressed = false }
+            }
 
             // Priority
             Picker("", selection: $state.editPriority) {

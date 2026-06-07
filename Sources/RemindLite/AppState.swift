@@ -17,6 +17,11 @@ final class AppState: ObservableObject {
     @Published var draft: String = ""            // the "add a reminder" field
     @Published var showCompleted = false         // Completed section collapsed by default
 
+    /// While true, the panel won't auto-close on losing key focus — set when the
+    /// date-picker popover (a separate child window) is open, so opening it doesn't
+    /// dismiss the whole panel.
+    var autoCloseSuppressed = false
+
     /// Closes the panel. Set by StatusController; called from SwiftUI (tapping
     /// outside the glass) so the view layer can dismiss without knowing AppKit.
     var closePanel: (() -> Void)?

@@ -132,6 +132,7 @@ final class StatusController: NSObject, NSWindowDelegate {
 
         // The window is clear; the SwiftUI glass fades + scales up from the top
         // (Control-Center "blurred → focus"). Start hidden.
+        state.autoCloseSuppressed = false
         panelSettled = false
         state.panelVisible = false
         panel.alphaValue = 1
@@ -196,6 +197,8 @@ final class StatusController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
+        // Don't dismiss when a child popover (the date calendar) takes focus.
+        if state.autoCloseSuppressed { return }
         if panel.isVisible { close() }
     }
 
