@@ -67,7 +67,12 @@ struct MenuContent: View {
     /// Each branch carries the transition so insert/remove animates.
     @ViewBuilder
     private var activeScreen: some View {
-        let move = AnyTransition.opacity.combined(with: .scale(scale: 0.98, anchor: .top))
+        // The incoming screen fades + scales in over the full duration; the
+        // outgoing one fades out quickly so its content (e.g. the tall month
+        // calendar) doesn't linger over the screen replacing it.
+        let move = AnyTransition.asymmetric(
+            insertion: .opacity.combined(with: .scale(scale: 0.98, anchor: .top)),
+            removal: .opacity.animation(.easeOut(duration: 0.12)))
         if state.tab == .reminders {
             if state.editingID != nil {
                 TaskDetail()
@@ -358,12 +363,40 @@ private struct AddField: View {
 /// reminders list when a task is tapped.
 private struct TaskDetail: View {
     @EnvironmentObject var state: AppState
-    @State private var showCalendar = false
     private let field = RoundedRectangle(cornerRadius: 10, style: .continuous)
     private let pickShape = RoundedRectangle(cornerRadius: 7, style: .continuous)
 
     private var canSave: Bool {
         !state.editTitle.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    // Animate a due/time toggle only when the destination height is already
+    // known (cached); otherwise apply it instantly. A cached change resizes the
+    // panel in lockstep with the content (smooth); an unknown one would have to
+    // animate a measured-a-frame-late height, which teleports — so snap instead.
+    private func setToggle(targetCached: Bool, _ change: @escaping () -> Void) {
+        if targetCached {
+            withAnimation(.easeInOut(duration: 0.3), change)
+        } else {
+            var tx = Transaction(); tx.disablesAnimations = true
+            withTransaction(tx, change)
+        }
+    }
+
+    private var dueBinding: Binding<Bool> {
+        Binding(get: { state.editHasDue }, set: { newVal in
+            setToggle(targetCached: state.editorHeightCached(due: newVal, time: state.editHasTime)) {
+                state.editHasDue = newVal
+            }
+        })
+    }
+
+    private var timeBinding: Binding<Bool> {
+        Binding(get: { state.editHasTime }, set: { newVal in
+            setToggle(targetCached: state.editorHeightCached(due: state.editHasDue, time: newVal)) {
+                state.editHasTime = newVal
+            }
+        })
     }
 
     // MARK: due-date helpers
@@ -383,14 +416,6 @@ private struct TaskDetail: View {
 
     private func isPicked(_ day: Date) -> Bool { cal.isDate(state.editDue, inSameDayAs: day) }
 
-    private var chipText: String {
-        let df = DateFormatter(); df.dateFormat = "MMM d, yyyy"
-        let s = df.string(from: state.editDue)
-        guard state.editHasTime else { return s }
-        let tf = DateFormatter(); tf.timeStyle = .short; tf.dateStyle = .none
-        return "\(s)  ·  \(tf.string(from: state.editDue))"
-    }
-
     @ViewBuilder
     private func quickPick(_ title: String, _ day: Date) -> some View {
         let on = isPicked(day)
@@ -404,6 +429,86 @@ private struct TaskDetail: View {
                 .overlay(pickShape.strokeBorder(.white.opacity(on ? 0 : 0.10), lineWidth: 0.8))
         }
         .buttonStyle(.plain)
+    }
+
+    // Time as plain dropdowns — no clock to drag, no editable digit field. Each
+    // menu writes back into editDue's hour/minute.
+    private var hourBinding: Binding<Int> {
+        Binding(get: {
+            let h = cal.component(.hour, from: state.editDue) % 12
+            return h == 0 ? 12 : h
+        }, set: { setTime(hour12: $0) })
+    }
+    private var minuteBinding: Binding<Int> {
+        Binding(get: { (cal.component(.minute, from: state.editDue) / 5) * 5 },
+                set: { setTime(minute: $0) })
+    }
+    private var isPMBinding: Binding<Bool> {
+        Binding(get: { cal.component(.hour, from: state.editDue) >= 12 },
+                set: { setTime(pm: $0) })
+    }
+
+    private func setTime(hour12: Int? = nil, minute: Int? = nil, pm: Bool? = nil) {
+        var c = cal.dateComponents([.year, .month, .day, .hour, .minute], from: state.editDue)
+        let curHour = c.hour ?? 9
+        let cur12 = { let x = curHour % 12; return x == 0 ? 12 : x }()
+        let h12 = hour12 ?? cur12
+        let newPM = pm ?? (curHour >= 12)
+        var h24 = h12 % 12
+        if newPM { h24 += 12 }
+        c.hour = h24
+        c.minute = minute ?? c.minute
+        if let d = cal.date(from: c) { state.editDue = d }
+    }
+
+    /// The due-on content (quick picks, calendar, divider, Time toggle) — minus
+    /// the time row. Reused for the visible section and for the hidden height
+    /// measurement, so both are identical.
+    private var dueContentBlock: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 6) {
+                quickPick("Today", today)
+                quickPick("Tomorrow", tomorrow)
+                quickPick("Next Week", nextWeek)
+            }
+            DatePicker("", selection: $state.editDue, displayedComponents: [.date])
+                .datePickerStyle(.graphical)
+                .labelsHidden()
+                .tint(.blue)
+
+            Divider().opacity(0.15)
+
+            HStack {
+                Label("Time", systemImage: "clock")
+                    .font(.system(size: 13))
+                Spacer()
+                Toggle("", isOn: timeBinding)
+                    .toggleStyle(.switch).controlSize(.mini).labelsHidden()
+            }
+        }
+    }
+
+    private var timeRow: some View {
+        HStack(spacing: 6) {
+            Spacer(minLength: 0)
+            Picker("", selection: hourBinding) {
+                ForEach(1...12, id: \.self) { Text("\($0)").tag($0) }
+            }.labelsHidden().fixedSize()
+            Text(":").foregroundStyle(.secondary)
+            Picker("", selection: minuteBinding) {
+                ForEach(Array(stride(from: 0, through: 55, by: 5)), id: \.self) {
+                    Text(String(format: "%02d", $0)).tag($0)
+                }
+            }.labelsHidden().fixedSize()
+            Picker("", selection: isPMBinding) {
+                Text("AM").tag(false)
+                Text("PM").tag(true)
+            }.labelsHidden().fixedSize()
+            Spacer(minLength: 0)
+        }
+        .pickerStyle(.menu)
+        .font(.system(size: 12))
+        .frame(maxWidth: .infinity)
     }
 
     var body: some View {
@@ -442,60 +547,55 @@ private struct TaskDetail: View {
             .background(field.fill(.white.opacity(0.05)))
             .overlay(field.strokeBorder(.white.opacity(0.08), lineWidth: 0.8))
 
-            // Due date — quick picks for the common cases + a chip that opens a
-            // real month calendar (no stuck blue digit highlight like .field).
+            // Due date — quick picks, an inline month calendar (tap a day; no
+            // editable digit fields, no stuck highlight), and a dropdown time
+            // chooser (no clock to drag).
             VStack(spacing: 8) {
                 HStack {
                     Label("Due Date", systemImage: "calendar")
                         .font(.system(size: 13))
                     Spacer()
-                    Toggle("", isOn: $state.editHasDue.animation(.easeInOut(duration: 0.15)))
+                    // Cache-aware toggle: smooth when the height is known, instant
+                    // the first time (no teleport). Keeps the content + panel height
+                    // in lockstep so the section fades/collapses cleanly.
+                    Toggle("", isOn: dueBinding)
                         .toggleStyle(.switch).controlSize(.mini).labelsHidden()
                 }
                 if state.editHasDue {
-                    HStack(spacing: 6) {
-                        quickPick("Today", today)
-                        quickPick("Tomorrow", tomorrow)
-                        quickPick("Next Week", nextWeek)
-                    }
-                    HStack(spacing: 8) {
-                        Button {
-                            state.autoCloseSuppressed = true   // keep panel open for the popover
-                            showCalendar = true
-                        } label: {
-                            HStack(spacing: 5) {
-                                Text(chipText).font(.system(size: 12, weight: .medium))
-                                Image(systemName: "calendar").font(.system(size: 11))
-                            }
-                            .foregroundStyle(.primary)
-                            .padding(.vertical, 5).padding(.horizontal, 9)
-                            .background(pickShape.fill(.white.opacity(0.08)))
-                            .overlay(pickShape.strokeBorder(.white.opacity(0.12), lineWidth: 0.8))
+                    dueContentBlock
+                        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) {
+                            state.dueContentHeight = $0
                         }
-                        .buttonStyle(.plain)
-                        .popover(isPresented: $showCalendar, arrowEdge: .bottom) {
-                            DatePicker("", selection: $state.editDue,
-                                       displayedComponents: state.editHasTime ? [.date, .hourAndMinute] : [.date])
-                                .datePickerStyle(.graphical)
-                                .labelsHidden()
-                                .tint(.blue)
-                                .environment(\.colorScheme, .dark)
-                                .padding(12)
-                                .frame(width: 260)
-                        }
-                        Spacer()
-                        Toggle("Time", isOn: $state.editHasTime.animation(.easeInOut(duration: 0.15)))
-                            .toggleStyle(.switch).controlSize(.mini)
-                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                    if state.editHasTime {
+                        timeRow
                     }
                 }
             }
             .padding(.vertical, 9).padding(.horizontal, 10)
             .background(field.fill(.white.opacity(0.05)))
             .overlay(field.strokeBorder(.white.opacity(0.08), lineWidth: 0.8))
-            // Re-arm auto-close once the calendar popover is dismissed.
-            .onChange(of: showCalendar) { _, open in
-                if !open { state.autoCloseSuppressed = false }
+            // Measure the section pieces even while hidden, so the *first* toggle
+            // of Due Date or Time already knows the height delta and animates
+            // (instead of snapping). The time row is tiny; the due-content block
+            // (with its calendar) is only measured hidden while Due Date is off —
+            // when it's on, we read the height from the visible block above.
+            .background {
+                ZStack {
+                    timeRow
+                        .fixedSize(horizontal: false, vertical: true)
+                        .hidden()
+                        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) {
+                            state.timeRowHeight = $0
+                        }
+                    if !state.editHasDue {
+                        dueContentBlock
+                            .fixedSize(horizontal: false, vertical: true)
+                            .hidden()
+                            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) {
+                                state.dueContentHeight = $0
+                            }
+                    }
+                }
             }
 
             // Priority

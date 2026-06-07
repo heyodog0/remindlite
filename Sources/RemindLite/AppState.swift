@@ -17,11 +17,6 @@ final class AppState: ObservableObject {
     @Published var draft: String = ""            // the "add a reminder" field
     @Published var showCompleted = false         // Completed section collapsed by default
 
-    /// While true, the panel won't auto-close on losing key focus — set when the
-    /// date-picker popover (a separate child window) is open, so opening it doesn't
-    /// dismiss the whole panel.
-    var autoCloseSuppressed = false
-
     /// Closes the panel. Set by StatusController; called from SwiftUI (tapping
     /// outside the glass) so the view layer can dismiss without knowing AppKit.
     var closePanel: (() -> Void)?
@@ -59,14 +54,61 @@ final class AppState: ObservableObject {
     /// Identity of the screen currently shown — list, editor, or calendar.
     private var screenKey: String {
         if tab == .calendar { return "calendar" }
-        return editingID == nil ? "list" : "editor"
+        if editingID == nil { return "list" }
+        // The editor's height depends on whether the due-date/time sections are
+        // shown, so cache each combination separately — that way toggling them
+        // sizes the panel synchronously (like navigation) instead of a frame late.
+        return "editor|\(editHasDue)|\(editHasTime)"
+    }
+
+    /// Heights of the toggle-able pieces of the editor, measured even while
+    /// hidden, so the *first* toggle of Due Date or Time already knows the height
+    /// delta and can animate (instead of snapping for lack of a cached height).
+    var timeRowHeight: CGFloat = 0 { didSet { recacheEditorHeights() } }
+    var dueContentHeight: CGFloat = 0 { didSet { recacheEditorHeights() } }
+    private let dueBoxSpacing: CGFloat = 8   // the due-date box's VStack spacing
+
+    /// Model the editor's height as base (Due Date off) + the due-content block
+    /// (+spacing) when due is on + the time row (+spacing) when time is on. Given
+    /// the current measured height and the two piece heights, derive and cache all
+    /// four combinations — so every toggle is a known (animated) resize.
+    private func recacheEditorHeights() {
+        guard editingID != nil, tab == .reminders else { return }
+        guard timeRowHeight > 0, dueContentHeight > 0,
+              let current = cachedScreenHeights[screenKey] else { return }
+        let dueDelta = dueContentHeight + dueBoxSpacing
+        let timeDelta = timeRowHeight + dueBoxSpacing
+        var base = current
+        if editHasDue { base -= dueDelta }
+        if editHasDue && editHasTime { base -= timeDelta }
+        cachedScreenHeights["editor|false|false"] = base
+        cachedScreenHeights["editor|false|true"]  = base
+        cachedScreenHeights["editor|true|false"]  = base + dueDelta
+        cachedScreenHeights["editor|true|true"]   = base + dueDelta + timeDelta
     }
 
     /// Called by the hidden probe with the current screen's natural body height.
     func reportScreenHeight(_ h: CGFloat) {
         guard h > 0 else { return }
         cachedScreenHeights[screenKey] = h
-        screenHeight = h
+        recacheEditorHeights()
+        guard abs(h - screenHeight) > 0.5 else { return }
+        // Always apply a probe measurement instantly. It lands a frame *after* the
+        // content changed, so animating it would teleport (content jumps in, then
+        // the frame eases up to it). Smooth animation happens only when we already
+        // know the destination height — see applyCachedHeight / the cache-aware
+        // toggles. (When the measurement just confirms the cached value, the guard
+        // above makes this a no-op, so it never cuts a running animation short.)
+        var tx = Transaction()
+        tx.disablesAnimations = true
+        withTransaction(tx) { screenHeight = h }
+    }
+
+    /// Whether we already know (have measured) the editor's height for a given
+    /// due/time combination. The toggles animate only when it's known, so the
+    /// first time into a combination snaps cleanly instead of teleporting.
+    func editorHeightCached(due: Bool, time: Bool) -> Bool {
+        cachedScreenHeights["editor|\(due)|\(time)"] != nil
     }
 
     /// On a screen change, jump the body height to the cached value (if known) so
@@ -88,9 +130,13 @@ final class AppState: ObservableObject {
     }
     @Published var editTitle = ""
     @Published var editNotes = ""
-    @Published var editHasDue = false
+    @Published var editHasDue = false {
+        didSet { applyCachedHeight() }
+    }
     @Published var editDue = Date()
-    @Published var editHasTime = true
+    @Published var editHasTime = true {
+        didSet { applyCachedHeight() }
+    }
     @Published var editPriority = 0       // 0 none, 1 high, 5 medium, 9 low
 
     /// How many days of events to show in the Calendar tab.

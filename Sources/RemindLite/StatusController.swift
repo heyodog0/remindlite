@@ -14,7 +14,7 @@ final class StatusController: NSObject, NSWindowDelegate {
 
     private let width: CGFloat = 300
     private let minHeight: CGFloat = 130
-    private let maxHeight: CGFloat = 600
+    private let maxHeight: CGFloat = 700   // room for the inline month calendar
     private let fallbackHeight: CGFloat = 250   // before the content first measures
     private var originX: CGFloat = 0
     private var pinnedTopY: CGFloat = 0
@@ -132,7 +132,6 @@ final class StatusController: NSObject, NSWindowDelegate {
 
         // The window is clear; the SwiftUI glass fades + scales up from the top
         // (Control-Center "blurred → focus"). Start hidden.
-        state.autoCloseSuppressed = false
         panelSettled = false
         state.panelVisible = false
         panel.alphaValue = 1
@@ -197,8 +196,6 @@ final class StatusController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        // Don't dismiss when a child popover (the date calendar) takes focus.
-        if state.autoCloseSuppressed { return }
         if panel.isVisible { close() }
     }
 
