@@ -3,36 +3,84 @@ import SwiftUI
 struct MenuContent: View {
     @EnvironmentObject var state: AppState
 
+    private let glassShape = RoundedRectangle(cornerRadius: 26, style: .continuous)
+
     var body: some View {
         VStack(spacing: 0) {
-            TabBar()
-            Divider().opacity(0.35)
-
-            if state.tab == .reminders {
-                if state.editingID != nil {
-                    TaskDetail()
-                } else {
-                    accessGate(state.access, denied: "Reminders access is off",
-                               prompt: "Show your reminders here") { TaskList() }
-                }
-            } else {
-                accessGate(state.calendarAccess, denied: "Calendar access is off",
-                           prompt: "Show your events here") { EventList() }
+            // Fixed header — measured once so the window knows the chrome height.
+            // It lives outside the height-animated body, so it can never be
+            // clipped or briefly overlaid during a transition.
+            VStack(spacing: 0) {
+                TabBar()
+                Divider().opacity(0.35)
             }
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { h in
+                state.chromeHeight = h
+            }
+
+            bodyArea
         }
         .padding(12)
-        .fixedSize(horizontal: false, vertical: true)   // hug content vertically
-        // Measure the ideal content height (before RootView's fill frame) so the
-        // window can size to it. fixedSize above keeps this the natural height,
-        // not the window height — no feedback loop.
-        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { h in
-            state.panelContentHeight = h
-        }
+        .frame(width: panelWidth, alignment: .top)
+        // The glass — native NSGlassEffectView behind the content, hugging it and
+        // animating its height with the body (all in SwiftUI; the window is clear).
+        .background(GlassBackground().clipShape(glassShape))
+        .overlay(glassShape.strokeBorder(.white.opacity(0.08), lineWidth: 0.8))
+        .clipShape(glassShape)
+        .shadow(color: .black.opacity(0.35), radius: 18, y: 6)
+        .frame(maxWidth: .infinity, alignment: .top)
         // First time the Calendar tab is opened, ask for permission.
         .onChange(of: state.tab) { _, newTab in
             if newTab == .calendar && state.calendarAccess == .unknown {
                 state.requestCalendarAccess()
             }
+        }
+    }
+
+    /// The body below the header: the active screen, cross-fading + scaling from
+    /// the top, with its frame height animated to the current screen's natural
+    /// height (measured by the hidden probe). Clipped so the outgoing screen
+    /// doesn't spill while shorter — and crucially this clip excludes the header.
+    private var bodyArea: some View {
+        ZStack(alignment: .top) {
+            activeScreen
+        }
+        .animation(.easeInOut(duration: 0.3), value: state.editingID)
+        .animation(.easeInOut(duration: 0.3), value: state.tab)
+        .frame(height: state.screenHeight > 0 ? state.screenHeight : nil, alignment: .top)
+        .clipped()
+        .animation(.easeInOut(duration: 0.3), value: state.screenHeight)
+        // Hidden, instantly-swapping copy reports the current screen's natural
+        // height (no cross-fade union), without affecting layout.
+        .background(alignment: .top) {
+            ZStack(alignment: .top) { activeScreen }
+                .fixedSize(horizontal: false, vertical: true)
+                .hidden()
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { h in
+                    state.reportScreenHeight(h)
+                }
+        }
+    }
+
+    /// The screen for the current (tab, editingID) state. Used twice — once
+    /// visible (cross-faded + scaled) and once hidden to measure its height.
+    /// Each branch carries the transition so insert/remove animates.
+    @ViewBuilder
+    private var activeScreen: some View {
+        let move = AnyTransition.opacity.combined(with: .scale(scale: 0.98, anchor: .top))
+        if state.tab == .reminders {
+            if state.editingID != nil {
+                TaskDetail()
+                    .transition(move)
+            } else {
+                accessGate(state.access, denied: "Reminders access is off",
+                           prompt: "Show your reminders here") { TaskList() }
+                    .transition(move)
+            }
+        } else {
+            accessGate(state.calendarAccess, denied: "Calendar access is off",
+                       prompt: "Show your events here") { EventList() }
+                .transition(move)
         }
     }
 
@@ -60,9 +108,9 @@ private struct TabBar: View {
             HStack(spacing: 2) {
                 ForEach(PanelTab.allCases) { t in
                     TabSegment(tab: t, selected: state.tab == t, namespace: pill) {
-                        // Don't wrap state.tab in withAnimation — that would animate
-                        // the content-height change and make the window slide. Only
-                        // the pill animates (via .animation(value:) below).
+                        // The pill slides (its own .animation below), the content
+                        // cross-fades, and the window eases to the new height — all
+                        // keyed off state.tab, so they move together.
                         state.tab = t
                     }
                 }
@@ -117,7 +165,6 @@ private struct TabSegment: View {
 
 private struct TaskList: View {
     @EnvironmentObject var state: AppState
-    @State private var innerHeight: CGFloat = 0
     private let scrollCap: CGFloat = 420   // scroll past this; below it the panel hugs content
 
     var body: some View {
@@ -136,9 +183,9 @@ private struct TaskList: View {
                     }
                 }
                 .padding(.vertical, 10)
-                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { innerHeight = $0 }
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { state.listInnerHeight = $0 }
             }
-            .frame(height: min(innerHeight, scrollCap))
+            .frame(height: min(state.listInnerHeight, scrollCap))
 
             Divider().opacity(0.35)
             AddField().padding(.top, 8)
@@ -364,11 +411,15 @@ private struct TaskDetail: View {
                 }
                 if state.editHasDue {
                     HStack(spacing: 8) {
+                        // .compact: a tappable chip that drops a calendar popover.
+                        // Unlike .field it doesn't leave a component highlighted
+                        // blue after you pick, and you click a day instead of
+                        // typing each segment.
                         DatePicker("", selection: $state.editDue,
                                    displayedComponents: state.editHasTime ? [.date, .hourAndMinute] : [.date])
-                            .datePickerStyle(.field).labelsHidden()
+                            .datePickerStyle(.compact).labelsHidden()
                         Spacer()
-                        Toggle("Time", isOn: $state.editHasTime)
+                        Toggle("Time", isOn: $state.editHasTime.animation(.easeInOut(duration: 0.15)))
                             .toggleStyle(.switch).controlSize(.mini)
                             .font(.system(size: 12)).foregroundStyle(.secondary)
                     }
@@ -446,7 +497,6 @@ private struct AccessMessage: View {
 /// Calendar (events) list, grouped by day across the next week.
 private struct EventList: View {
     @EnvironmentObject var state: AppState
-    @State private var innerHeight: CGFloat = 0
     private let scrollCap: CGFloat = 440
 
     var body: some View {
@@ -466,9 +516,9 @@ private struct EventList: View {
                 }
             }
             .padding(.vertical, 10)
-            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { innerHeight = $0 }
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { state.eventInnerHeight = $0 }
         }
-        .frame(height: min(innerHeight, scrollCap))
+        .frame(height: min(state.eventInnerHeight, scrollCap))
     }
 }
 

@@ -8,18 +8,79 @@ import EventKit
 final class AppState: ObservableObject {
     @Published var tasks: [TaskItem] = []
     @Published var events: [EventItem] = []
-    @Published var tab: PanelTab = .reminders
+    @Published var tab: PanelTab = .reminders {
+        didSet { applyCachedHeight() }
+    }
     @Published var access: RemindersStore.Access = .unknown          // reminders
     @Published var calendarAccess: RemindersStore.Access = .unknown  // events
     @Published var panelVisible = false
     @Published var draft: String = ""            // the "add a reminder" field
     @Published var showCompleted = false         // Completed section collapsed by default
 
-    /// Natural (ideal) height of the panel content; the window is sized to it.
+    /// Closes the panel. Set by StatusController; called from SwiftUI (tapping
+    /// outside the glass) so the view layer can dismiss without knowing AppKit.
+    var closePanel: (() -> Void)?
+
+    // MARK: panel sizing
+    //
+    // The glass and all height animation live in SwiftUI now (the window is a
+    // transparent canvas). `screenHeight` is the natural height of the current
+    // screen — SwiftUI animates the body's frame to it, so the panel grows/shrinks
+    // smoothly under the fixed header with no AppKit frame animation (nothing to
+    // slide or blink). `panelContentHeight` is the full glass height the window
+    // must at least cover; the window snaps to it invisibly (transparent margin).
+
+    /// Natural height of the current screen's body (below the header). SwiftUI
+    /// animates to this. Cached per screen so re-visiting one starts the animation
+    /// in lockstep with the content cross-fade, not a frame late.
+    @Published var screenHeight: CGFloat = 0 { didSet { recomputePanelHeight() } }
+
+    /// Measured height of the fixed chrome (tabs + divider). Constant in practice.
+    @Published var chromeHeight: CGFloat = 0 { didSet { recomputePanelHeight() } }
+
+    /// Full glass height (chrome + body + padding); drives the transparent window.
     @Published var panelContentHeight: CGFloat = 0
 
+    private let panelVPadding: CGFloat = 24   // .padding(12) top + bottom
+
+    private func recomputePanelHeight() {
+        let h = chromeHeight + screenHeight + panelVPadding
+        if abs(h - panelContentHeight) > 0.5 { panelContentHeight = h }
+    }
+
+    /// Last measured body height per screen, so re-visiting one sizes immediately.
+    private var cachedScreenHeights: [String: CGFloat] = [:]
+
+    /// Identity of the screen currently shown — list, editor, or calendar.
+    private var screenKey: String {
+        if tab == .calendar { return "calendar" }
+        return editingID == nil ? "list" : "editor"
+    }
+
+    /// Called by the hidden probe with the current screen's natural body height.
+    func reportScreenHeight(_ h: CGFloat) {
+        guard h > 0 else { return }
+        cachedScreenHeights[screenKey] = h
+        screenHeight = h
+    }
+
+    /// On a screen change, jump the body height to the cached value (if known) so
+    /// the SwiftUI height animation starts together with the content transition.
+    private func applyCachedHeight() {
+        if let h = cachedScreenHeights[screenKey] { screenHeight = h }
+    }
+
+    /// Measured inner heights of the scrolling lists, kept here (not in @State on
+    /// the list views) so they survive the views being torn down and rebuilt when
+    /// you open/close the editor or switch tabs. Otherwise a rebuilt list starts
+    /// at 0, collapses for a frame, and the panel jerks.
+    @Published var listInnerHeight: CGFloat = 0
+    @Published var eventInnerHeight: CGFloat = 0
+
     /// Task-editor state. `editingID != nil` shows the detail/edit view.
-    @Published var editingID: String?
+    @Published var editingID: String? {
+        didSet { applyCachedHeight() }
+    }
     @Published var editTitle = ""
     @Published var editNotes = ""
     @Published var editHasDue = false
@@ -144,12 +205,44 @@ final class AppState: ObservableObject {
 
     func saveEdit() {
         guard let id = editingID else { return }
+        // Apply the edit to the in-memory list *before* leaving the editor, so the
+        // row shows its new values the instant the list reappears. Mirrors exactly
+        // what the store round-trip (update → fetch) produces, so the refresh()
+        // below resolves to identical data — no flash of stale content, and no
+        // second window resize. Without this, save snapped to the old row, then
+        // snapped again when refresh() re-sorted it in.
+        if let i = tasks.firstIndex(where: { $0.id == id }) {
+            let old = tasks[i]
+            tasks[i] = TaskItem(
+                id: old.id,
+                title: editTitle.trimmingCharacters(in: .whitespacesAndNewlines),
+                due: resolvedEditDue(),
+                hasTime: editHasDue && editHasTime,
+                priority: editPriority,
+                notes: editNotes.isEmpty ? nil : editNotes,
+                completed: old.completed,
+                completionDate: old.completionDate)
+        }
         editingID = nil
         store.update(id: id, title: editTitle, notes: editNotes,
                      due: editHasDue ? editDue : nil, hasTime: editHasTime,
                      priority: editPriority) { [weak self] in
             self?.refresh()
         }
+    }
+
+    /// The due date as the store will persist and re-read it: date-only when time
+    /// is off, date+time otherwise (seconds dropped). Keeps the optimistic row in
+    /// saveEdit identical to what the next fetch returns.
+    private func resolvedEditDue() -> Date? {
+        guard editHasDue else { return nil }
+        let cal = Calendar.current
+        var comps = cal.dateComponents([.year, .month, .day], from: editDue)
+        if editHasTime {
+            let t = cal.dateComponents([.hour, .minute], from: editDue)
+            comps.hour = t.hour; comps.minute = t.minute
+        }
+        return cal.date(from: comps)
     }
 
     /// Delete the task currently being edited.

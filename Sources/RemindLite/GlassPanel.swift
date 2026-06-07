@@ -1,67 +1,42 @@
 import AppKit
 import SwiftUI
 
-/// Borderless panel whose background is an AppKit Liquid Glass view
-/// (NSGlassEffectView). The glass resizes natively with the window, which
-/// SwiftUI's glassEffect can't do without recursing when its area resizes.
+/// A transparent, borderless host panel. The visible "glass" panel, its rounded
+/// shape, shadow, and *all* height animation now live in SwiftUI (see RootView /
+/// GlassBackground). The window is just a clear canvas pinned under the menu bar;
+/// resizing it is invisible (its margins are transparent), so the panel can grow
+/// and shrink entirely within SwiftUI — one layout system, nothing for AppKit to
+/// animate and drag.
 ///
-/// The panel is *activating* (no `.nonactivatingPanel`) so the "Add a reminder"
-/// text field gets a real, well-behaved insertion point — non-activating panels
-/// give text fields a flaky cursor.
+/// Activating (no `.nonactivatingPanel`) so the "Add a reminder" text field gets a
+/// real, stable insertion point — non-activating panels give text fields a flaky
+/// cursor.
 final class GlassPanel: NSPanel {
-    static let cornerRadius: CGFloat = 26
-
     private let host: NSHostingView<AnyView>
 
     init<Content: View>(content: Content) {
-        // A normal hosting view that FILLS the window. The SwiftUI content is
-        // top-anchored, so if it ever exceeds the window it clips at the bottom
-        // (tabs/header stay put) rather than centering and clipping both ends.
         host = NSHostingView(rootView: AnyView(content))
 
-        // Borderless but NOT `.nonactivatingPanel`: the panel activates and
-        // becomes key, which is what a text field needs for a stable cursor.
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 300, height: 420),
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 300, height: 600),
                    styleMask: [.borderless],
                    backing: .buffered, defer: false)
         isFloatingPanel = true
         level = .popUpMenu
         isOpaque = false
         backgroundColor = .clear
-        hasShadow = true
+        hasShadow = false           // the SwiftUI glass draws its own shadow
         isMovableByWindowBackground = false
         hidesOnDeactivate = false
         animationBehavior = .none
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        // A layer-masked container clips the glass's rectangular backing to the
-        // rounded shape — otherwise the glass's opaque corner pixels show as
-        // black squares behind the rounded corners.
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 420))
-        container.wantsLayer = true
-        container.layer?.cornerRadius = Self.cornerRadius
-        container.layer?.cornerCurve = .continuous
-        container.layer?.masksToBounds = true
-
-        let glass = NSGlassEffectView()
-        glass.frame = container.bounds
-        glass.autoresizingMask = [.width, .height]
-        glass.cornerRadius = Self.cornerRadius
-
-        host.frame = glass.bounds
+        host.frame = NSRect(x: 0, y: 0, width: 300, height: 600)
         host.autoresizingMask = [.width, .height]
-        // Opt the hosting view OUT of driving the window size. By default
-        // NSHostingView reports a fitting size and resizes its window to match;
-        // with our top-anchored `maxHeight: .infinity` content that fitting size
-        // runs tall and fought our manual setFrame — the window oscillated ~120pt
-        // above the measured content (the blank-margin bug). We size the window
-        // ourselves from panelContentHeight, so the host should only fill.
+        // Don't let the hosting view drive the window size; we size the window
+        // ourselves to hug the SwiftUI glass (StatusController).
         host.sizingOptions = []
         host.layer?.backgroundColor = .clear
-        glass.contentView = host
-
-        container.addSubview(glass)
-        contentView = container
+        contentView = host
     }
 
     override var canBecomeKey: Bool { true }

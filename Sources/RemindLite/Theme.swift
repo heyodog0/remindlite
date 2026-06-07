@@ -1,20 +1,47 @@
 import SwiftUI
+import AppKit
 
 let panelWidth: CGFloat = 300
 
-/// Outer SwiftUI content for the glass panel. Transparent — the Liquid Glass
-/// and resize live in AppKit (NSGlassEffectView); SwiftUI only fades/scales in
-/// on open so the panel reads as "blurred → focus" like Control Center.
+/// Real AppKit Liquid Glass (NSGlassEffectView) exposed to SwiftUI so SwiftUI can
+/// size and animate it. The window itself is transparent; this is what you see.
+/// NSGlassEffectView resizes natively, so when SwiftUI animates its frame the
+/// glass follows smoothly — no recursion like SwiftUI's own `.glassEffect`.
+struct GlassBackground: NSViewRepresentable {
+    var cornerRadius: CGFloat = 26
+    func makeNSView(context: Context) -> NSGlassEffectView {
+        let v = NSGlassEffectView()
+        v.cornerRadius = cornerRadius
+        return v
+    }
+    func updateNSView(_ v: NSGlassEffectView, context: Context) {
+        v.cornerRadius = cornerRadius
+    }
+}
+
+/// Outer SwiftUI content. The window is a transparent canvas; this draws the
+/// glass panel (hugging its content, top-pinned) over a clear backdrop. Tapping
+/// the backdrop dismisses, like clicking outside a popover.
 struct RootView: View {
     @EnvironmentObject var state: AppState
     var body: some View {
-        MenuContent()
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .environment(\.colorScheme, .dark)
-            .tint(.blue)
-            // The whole panel (glass + content) fades together via the window's
-            // alpha; this just gates the content so it never flashes pre-sized.
-            .opacity(state.panelVisible ? 1 : 0)
+        ZStack(alignment: .top) {
+            // Transparent dismiss area (covers any margin below the panel while it
+            // animates shorter). Clicks elsewhere already dismiss via resignKey.
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { state.closePanel?() }
+
+            MenuContent()
+                // Fades + scales up from the top on open (reverses on close) for a
+                // Control-Center "blurred → focus" feel; anchored top so the panel
+                // stays pinned to the menu bar through the scale.
+                .opacity(state.panelVisible ? 1 : 0)
+                .scaleEffect(state.panelVisible ? 1 : 0.96, anchor: .top)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .environment(\.colorScheme, .dark)
+        .tint(.blue)
     }
 }
 

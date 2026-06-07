@@ -18,6 +18,9 @@ final class StatusController: NSObject, NSWindowDelegate {
     private let fallbackHeight: CGFloat = 250   // before the content first measures
     private var originX: CGFloat = 0
     private var pinnedTopY: CGFloat = 0
+    // Resize instantly until the panel has finished opening, then animate height
+    // changes (list ↔ editor, tab switches) so the panel grows/shrinks smoothly.
+    private var panelSettled = false
 
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -47,15 +50,19 @@ final class StatusController: NSObject, NSWindowDelegate {
             .sink { [weak self] _, _ in self?.updateBadge() }
             .store(in: &cancellables)
 
-        // The content publishes its ideal height; size the window to it, instant
-        // (no animation, so nothing wobbles). removeDuplicates avoids redundant
-        // work when the height is unchanged.
+        // The SwiftUI glass publishes its full height; keep the transparent window
+        // at least that tall so it never clips the glass. Resizing is invisible
+        // (the window's margins are clear), so there's no frame animation to drag
+        // the content — all motion is the SwiftUI glass animating its own height.
         state.$panelContentHeight
             .removeDuplicates()
             .dropFirst()
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.resizeIfOpen() }
+            .sink { [weak self] _ in self?.syncWindowSize() }
             .store(in: &cancellables)
+
+        // Let SwiftUI (tap outside the glass) dismiss the panel.
+        state.closePanel = { [weak self] in self?.close() }
     }
 
     private func panelHeight() -> CGFloat {
@@ -121,11 +128,13 @@ final class StatusController: NSObject, NSWindowDelegate {
         originX = x
         pinnedTopY = buttonFrame.minY
 
-        panel.setFrame(NSRect(x: x, y: pinnedTopY - h, width: width, height: h), display: false)
+        setWindow(h)
 
-        // Whole-panel fade in (glass + content together) — start fully hidden.
-        state.panelVisible = true
-        panel.alphaValue = 0
+        // The window is clear; the SwiftUI glass fades + scales up from the top
+        // (Control-Center "blurred → focus"). Start hidden.
+        panelSettled = false
+        state.panelVisible = false
+        panel.alphaValue = 1
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         statusItem.button?.highlight(true)
@@ -135,24 +144,36 @@ final class StatusController: NSObject, NSWindowDelegate {
             // Don't let the key window auto-focus the "Add a reminder" text
             // field — the cursor should only appear when the user clicks it.
             self.panel.makeFirstResponder(nil)
-            // Content has laid out — snap to its true height (instant) before
-            // fading, so the panel doesn't change size mid-fade.
-            self.resizeIfOpen()
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.16
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                self.panel.animator().alphaValue = 1
+            // Content has laid out — cover its true height before it animates in.
+            self.syncWindowSize()
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.74)) {
+                self.state.panelVisible = true
+            }
+            self.panelSettled = true
+        }
+    }
+
+    /// Keep the transparent window tall enough to contain the SwiftUI glass, top
+    /// edge pinned. Growing is applied immediately (the new space is clear, so
+    /// it's invisible, and gives the glass room to animate into). Shrinking waits
+    /// for the glass to finish collapsing, then tightens — also invisible. The
+    /// window is only ever set instantly; the *glass* is what animates, in SwiftUI.
+    private func syncWindowSize() {
+        guard panel.isVisible else { return }
+        let target = panelHeight()
+        let current = panel.frame.height
+        guard abs(target - current) > 0.5 else { return }
+        if !panelSettled || target > current {
+            setWindow(target)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) { [weak self] in
+                guard let self, self.panel.isVisible else { return }
+                self.setWindow(self.panelHeight())
             }
         }
     }
 
-    /// Resize the window to hug the SwiftUI content, top edge pinned — always
-    /// instant. The window is simply kept the right size; nothing animates, so
-    /// nothing can wobble or jump.
-    private func resizeIfOpen() {
-        guard panel.isVisible else { return }
-        let h = panelHeight()
-        guard abs(h - panel.frame.height) > 0.5 else { return }
+    private func setWindow(_ h: CGFloat) {
         panel.setFrame(NSRect(x: originX, y: pinnedTopY - h, width: width, height: h),
                        display: true)
     }
@@ -163,20 +184,15 @@ final class StatusController: NSObject, NSWindowDelegate {
         // draft starts clean next time.
         panel.makeFirstResponder(nil)
         state.draft = ""
+        panelSettled = false
 
-        // A clean whole-panel fade out — window stays put and just dissolves.
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.13
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            panel.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
+        // The SwiftUI glass fades + scales down toward the menu bar; once it's
+        // gone, order the (clear) window out.
+        withAnimation(.easeIn(duration: 0.16)) { state.panelVisible = false }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
             guard let self else { return }
-            MainActor.assumeIsolated {
-                self.panel.orderOut(nil)
-                self.panel.alphaValue = 1
-                self.state.panelVisible = false
-            }
-        })
+            self.panel.orderOut(nil)
+        }
     }
 
     func windowDidResignKey(_ notification: Notification) {
