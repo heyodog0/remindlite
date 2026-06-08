@@ -21,12 +21,6 @@ final class AppState: ObservableObject {
     @Published var panelVisible = false
     @Published var draft: String = ""            // the "add a reminder" title field
     @Published var draftNotes: String = ""       // optional notes for the new reminder
-    // Shared (not @State in AddField) so the hidden height-probe copy expands too,
-    // otherwise the panel measures the collapsed add field and won't grow.
-    @Published var showDraftNotes = false { didSet { applyCachedHeight() } }
-    /// Pre-measured height the notes field adds, so the first toggle animates to a
-    /// known height (smooth) instead of snapping — same idea as the editor's rows.
-    var draftNotesRowHeight: CGFloat = 0 { didSet { recacheListHeights() } }
     @Published var showCompleted = false         // Completed section collapsed by default
 
     // MARK: per-calendar event filter
@@ -213,7 +207,7 @@ final class AppState: ObservableObject {
     private var screenKey: String {
         if tab == .calendar { return showingCalendarFilter ? "calFilter" : "calendar" }
         if showingListFilter { return "listFilter" }
-        if editingID == nil { return "list|\(showDraftNotes)" }
+        if editingID == nil { return "list" }
         // The editor's height depends on whether the due-date/time sections are
         // shown, so cache each combination separately — that way toggling them
         // sizes the panel synchronously (like navigation) instead of a frame late.
@@ -246,23 +240,11 @@ final class AppState: ObservableObject {
         cachedScreenHeights["editor|true|true"]   = base + dueDelta + timeDelta
     }
 
-    /// Derive both list heights (notes off/on) from whichever we have plus the
-    /// measured notes-row height, so the first notes toggle animates smoothly.
-    private func recacheListHeights() {
-        guard tab == .reminders, editingID == nil, !showingListFilter else { return }
-        guard draftNotesRowHeight > 0, let current = cachedScreenHeights[screenKey] else { return }
-        var base = current
-        if showDraftNotes { base -= draftNotesRowHeight }
-        cachedScreenHeights["list|false"] = base
-        cachedScreenHeights["list|true"]  = base + draftNotesRowHeight
-    }
-
     /// Called by the hidden probe with the current screen's natural body height.
     func reportScreenHeight(_ h: CGFloat) {
         guard h > 0 else { return }
         cachedScreenHeights[screenKey] = h
         recacheEditorHeights()
-        recacheListHeights()
         // Only correct on a meaningful difference. A tight threshold caused a 1px
         // instant correction mid-animation (when the probe's late measurement
         // differed slightly from the pre-cached height) — visible as a stutter.

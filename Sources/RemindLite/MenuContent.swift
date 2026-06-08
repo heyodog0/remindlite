@@ -256,6 +256,7 @@ private struct TaskList: View {
             .frame(height: min(state.listInnerHeight, scrollCap))
 
             Divider().opacity(0.35)
+            // Always-visible title + notes composer (no toggle, so no resize flash).
             AddField().padding(.top, 8)
         }
     }
@@ -423,26 +424,16 @@ private struct AddField: View {
     }
 
     var body: some View {
+        // Title + notes always visible — no toggle, so the panel never grows/shrinks
+        // for notes and there's no resize flash at all.
         VStack(spacing: 0) {
             titleRow
-            // .identity → no fade; the notes block is revealed purely by the panel
-            // growing (the bodyArea clip), which avoids the opacity flash.
-            if state.showDraftNotes { notesBlock.transition(.identity) }
+            notesBlock
         }
         .padding(.vertical, 7).padding(.horizontal, 9)
         .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.06)))
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
             .strokeBorder((focused || notesFocused) ? .blue.opacity(0.5) : .white.opacity(0.12), lineWidth: 0.8))
-        // Always-measure the notes block (hidden) so the first toggle animates to a
-        // known height instead of snapping.
-        .background(alignment: .top) {
-            notesMeasure
-                .fixedSize(horizontal: false, vertical: true)
-                .hidden()
-                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) {
-                    state.draftNotesRowHeight = $0
-                }
-        }
         // Tapping anywhere in the pill focuses the title field (bigger hit target).
         .contentShape(Rectangle())
         .onTapGesture { focused = true }
@@ -464,43 +455,18 @@ private struct AddField: View {
 
             // Which list the new reminder is filed into (remembers the choice).
             if state.reminderLists.count > 1 { listMenu }
-
-            // Toggle an inline notes field for the new reminder (animated grow).
-            // Don't auto-focus it: focusing mid-grow attaches the text field editor
-            // before layout settles (a stray flash nearby) and flips the border blue
-            // (the opacity flash). Click the field to type — cursor on demand.
-            Button {
-                withAnimation(.easeInOut(duration: 0.3)) { state.showDraftNotes.toggle() }
-            } label: {
-                Image(systemName: state.showDraftNotes ? "note.text" : "note.text.badge.plus")
-                    .font(.system(size: 13))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(state.showDraftNotes ? Color.accentColor : .secondary)
-            .help(state.showDraftNotes ? "Hide notes" : "Add notes")
         }
     }
 
     private var notesBlock: some View {
         VStack(spacing: 6) {
             Divider().opacity(0.15)
-            TextField("Notes", text: $state.draftNotes)
+            TextField("Notes (optional)", text: $state.draftNotes)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .focused($notesFocused)
                 .onSubmit { submit() }
-        }
-        .padding(.top, 6)
-    }
-
-    /// Layout-identical, non-interactive copy of `notesBlock` for height probing.
-    private var notesMeasure: some View {
-        VStack(spacing: 6) {
-            Divider().opacity(0.15)
-            TextField("Notes", text: .constant(""))
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
         }
         .padding(.top, 6)
     }
