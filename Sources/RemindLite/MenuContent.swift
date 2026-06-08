@@ -82,6 +82,8 @@ struct MenuContent: View {
                            prompt: "Show your reminders here") { TaskList() }
                     .transition(move)
             }
+        } else if state.showingCalendarFilter {
+            CalendarFilter().transition(move)
         } else {
             accessGate(state.calendarAccess, denied: "Calendar access is off",
                        prompt: "Show your events here") { EventList() }
@@ -124,6 +126,23 @@ private struct TabBar: View {
             .background(shape.fill(.white.opacity(0.06)))
             .overlay(shape.strokeBorder(.white.opacity(0.10), lineWidth: 0.8))
             .animation(.easeInOut(duration: 0.22), value: state.tab)
+
+            // Calendar tab only: choose which calendars' events appear.
+            if state.tab == .calendar && state.calendarAccess == .granted {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        state.showingCalendarFilter.toggle()
+                    }
+                } label: {
+                    Image(systemName: state.showingCalendarFilter
+                          ? "line.3.horizontal.decrease.circle.fill"
+                          : "line.3.horizontal.decrease.circle")
+                        .font(.system(size: 13, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(state.showingCalendarFilter ? Color.accentColor : .secondary)
+                .help("Choose calendars")
+            }
 
             Button {
                 state.tab == .reminders ? state.openRemindersApp() : state.openCalendarApp()
@@ -660,6 +679,95 @@ private struct AccessMessage: View {
             }
         }
         .padding(.vertical, 20).padding(.horizontal, 8)
+    }
+}
+
+/// Per-calendar visibility filter for the Calendar tab. Lists every event
+/// calendar (grouped by account) with a toggle; hidden ones are excluded from
+/// the event fetch. EventKit has no visibility API, so the choice is RemindLite's
+/// own, persisted in AppState.
+private struct CalendarFilter: View {
+    @EnvironmentObject var state: AppState
+    private let scrollCap: CGFloat = 360
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.3)) { state.showingCalendarFilter = false }
+                } label: {
+                    Label("Back", systemImage: "chevron.left")
+                        .font(.system(size: 13, weight: .medium))
+                }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                Spacer()
+                Text("Calendars").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Color.clear.frame(width: 40, height: 1)   // balance the back button
+            }
+
+            if state.eventCalendars.isEmpty {
+                Text("No calendars found")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 20)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(accounts, id: \.self) { account in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(account.uppercased())
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 4)
+                                ForEach(state.eventCalendars.filter { $0.account == account }) { cal in
+                                    CalendarToggleRow(cal: cal)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) {
+                        state.calendarFilterInnerHeight = $0
+                    }
+                }
+                .frame(height: min(state.calendarFilterInnerHeight, scrollCap))
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    /// Account names in first-seen order (calendars are already account-sorted).
+    private var accounts: [String] {
+        var seen = Set<String>(); var order: [String] = []
+        for c in state.eventCalendars where seen.insert(c.account).inserted { order.append(c.account) }
+        return order
+    }
+}
+
+private struct CalendarToggleRow: View {
+    @EnvironmentObject var state: AppState
+    let cal: CalendarOption
+
+    private var shown: Bool { state.isCalendarShown(cal.id) }
+
+    var body: some View {
+        Button { state.toggleCalendar(cal.id) } label: {
+            HStack(spacing: 9) {
+                Circle().fill(cal.color).frame(width: 10, height: 10)
+                Text(cal.title).font(.system(size: 13)).lineLimit(1)
+                    .foregroundStyle(shown ? .primary : .secondary)
+                Spacer(minLength: 8)
+                Image(systemName: shown ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 15))
+                    .foregroundStyle(shown ? Color.blue : .secondary)
+            }
+            .padding(.vertical, 5).padding(.horizontal, 10)
+            .frame(maxWidth: .infinity)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.white.opacity(0.04)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 

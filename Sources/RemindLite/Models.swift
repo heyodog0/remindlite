@@ -32,6 +32,14 @@ struct EventItem: Identifiable, Equatable {
     static func == (a: EventItem, b: EventItem) -> Bool { a.id == b.id }
 }
 
+/// One selectable event calendar, flattened from EKCalendar for the filter UI.
+struct CalendarOption: Identifiable, Equatable {
+    let id: String          // EKCalendar.calendarIdentifier
+    let title: String
+    let color: Color
+    let account: String     // EKSource.title — iCloud, a Google account, Subscriptions…
+}
+
 /// Which list the panel is showing. (Named PanelTab to avoid SwiftUI's `Tab`.)
 enum PanelTab: String, CaseIterable, Identifiable {
     case reminders, calendar

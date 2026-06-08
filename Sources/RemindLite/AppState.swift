@@ -9,13 +9,51 @@ final class AppState: ObservableObject {
     @Published var tasks: [TaskItem] = []
     @Published var events: [EventItem] = []
     @Published var tab: PanelTab = .reminders {
-        didSet { applyCachedHeight() }
+        didSet {
+            if tab != .calendar { showingCalendarFilter = false }
+            applyCachedHeight()
+        }
     }
     @Published var access: RemindersStore.Access = .unknown          // reminders
     @Published var calendarAccess: RemindersStore.Access = .unknown  // events
     @Published var panelVisible = false
     @Published var draft: String = ""            // the "add a reminder" field
     @Published var showCompleted = false         // Completed section collapsed by default
+
+    // MARK: per-calendar event filter
+    //
+    // EventKit exposes no API for Calendar.app's per-calendar visibility checkbox,
+    // so we keep our own set of hidden calendar IDs (persisted) and restrict the
+    // event fetch to the rest. New calendars default to shown (only hidden IDs are
+    // stored), so a freshly-subscribed calendar appears without extra steps.
+    @Published var eventCalendars: [CalendarOption] = []
+    @Published var showingCalendarFilter = false { didSet { applyCachedHeight() } }
+    private let hiddenCalendarsKey = "hiddenEventCalendarIDs"
+    @Published var hiddenCalendarIDs: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "hiddenEventCalendarIDs") ?? []) {
+        didSet { UserDefaults.standard.set(Array(hiddenCalendarIDs), forKey: hiddenCalendarsKey) }
+    }
+
+    func isCalendarShown(_ id: String) -> Bool { !hiddenCalendarIDs.contains(id) }
+
+    /// Flip a calendar's visibility and re-fetch so the change shows immediately.
+    func toggleCalendar(_ id: String) {
+        if hiddenCalendarIDs.contains(id) { hiddenCalendarIDs.remove(id) }
+        else { hiddenCalendarIDs.insert(id) }
+        refreshEvents()
+    }
+
+    /// Snapshot the available event calendars (account, color, name) for the UI.
+    private func loadEventCalendars() {
+        eventCalendars = store.eventCalendars().map {
+            CalendarOption(id: $0.calendarIdentifier,
+                           title: $0.title,
+                           color: $0.cgColor.map { Color(cgColor: $0) } ?? .secondary,
+                           account: $0.source?.title ?? "")
+        }
+        .sorted { ($0.account.localizedLowercase, $0.title.localizedLowercase)
+                < ($1.account.localizedLowercase, $1.title.localizedLowercase) }
+    }
 
     /// Closes the panel. Set by StatusController; called from SwiftUI (tapping
     /// outside the glass) so the view layer can dismiss without knowing AppKit.
@@ -53,7 +91,7 @@ final class AppState: ObservableObject {
 
     /// Identity of the screen currently shown — list, editor, or calendar.
     private var screenKey: String {
-        if tab == .calendar { return "calendar" }
+        if tab == .calendar { return showingCalendarFilter ? "calFilter" : "calendar" }
         if editingID == nil { return "list" }
         // The editor's height depends on whether the due-date/time sections are
         // shown, so cache each combination separately — that way toggling them
@@ -123,6 +161,7 @@ final class AppState: ObservableObject {
     /// at 0, collapses for a frame, and the panel jerks.
     @Published var listInnerHeight: CGFloat = 0
     @Published var eventInnerHeight: CGFloat = 0
+    @Published var calendarFilterInnerHeight: CGFloat = 0
 
     /// Task-editor state. `editingID != nil` shows the detail/edit view.
     @Published var editingID: String? {
@@ -197,7 +236,13 @@ final class AppState: ObservableObject {
     func refreshEvents() {
         calendarAccess = store.calendarAccess
         guard calendarAccess == .granted else { return }
-        store.fetchEvents(days: eventWindowDays) { [weak self] items in
+        loadEventCalendars()
+        let enabledIDs = eventCalendars.map(\.id).filter { !hiddenCalendarIDs.contains($0) }
+        // Every calendar hidden → show nothing (an empty predicate list is
+        // ambiguous, so short-circuit). No calendars loaded yet → fetch all.
+        if !eventCalendars.isEmpty && enabledIDs.isEmpty { events = []; return }
+        let cals = enabledIDs.isEmpty ? nil : store.calendars(withIDs: enabledIDs)
+        store.fetchEvents(days: eventWindowDays, calendars: cals) { [weak self] items in
             self?.events = items
         }
     }

@@ -46,12 +46,23 @@ final class RemindersStore {
         }
     }
 
+    /// All calendars that can hold events, for the per-calendar filter UI.
+    func eventCalendars() -> [EKCalendar] { store.calendars(for: .event) }
+
+    /// Look up calendars by identifier (the enabled set passed from AppState).
+    func calendars(withIDs ids: [String]) -> [EKCalendar] {
+        let wanted = Set(ids)
+        return store.calendars(for: .event).filter { wanted.contains($0.calendarIdentifier) }
+    }
+
     /// Fetch events from now through `days` ahead, flattened + sorted. Main thread.
-    func fetchEvents(days: Int, _ done: @escaping ([EventItem]) -> Void) {
+    /// `calendars: nil` means every calendar; an explicit list restricts to those.
+    func fetchEvents(days: Int, calendars: [EKCalendar]?,
+                     _ done: @escaping ([EventItem]) -> Void) {
         let cal = Calendar.current
         let start = Date()
         let end = cal.date(byAdding: .day, value: days, to: cal.startOfDay(for: start)) ?? start
-        let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
+        let predicate = store.predicateForEvents(withStart: start, end: end, calendars: calendars)
         // fetchEvents is synchronous; hop off the main thread to stay responsive.
         DispatchQueue.global(qos: .userInitiated).async { [store] in
             let items = store.events(matching: predicate)
