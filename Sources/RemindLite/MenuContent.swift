@@ -461,7 +461,7 @@ private struct AddField: View {
     private var notesBlock: some View {
         VStack(spacing: 6) {
             Divider().opacity(0.15)
-            TextField("Notes (optional)", text: $state.draftNotes)
+            TextField("Notes", text: $state.draftNotes)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
