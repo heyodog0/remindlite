@@ -396,6 +396,7 @@ private struct TaskRow: View {
             }
             .buttonStyle(.plain)
             .opacity(hovering ? 1 : 0)
+            .padding(.trailing, 8)
             .help("Delete reminder")
         }
         .padding(.vertical, 5).padding(.horizontal, 10)
