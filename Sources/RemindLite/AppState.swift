@@ -263,7 +263,11 @@ final class AppState: ObservableObject {
         cachedScreenHeights[screenKey] = h
         recacheEditorHeights()
         recacheListHeights()
-        guard abs(h - screenHeight) > 0.5 else { return }
+        // Only correct on a meaningful difference. A tight threshold caused a 1px
+        // instant correction mid-animation (when the probe's late measurement
+        // differed slightly from the pre-cached height) — visible as a stutter.
+        // A few px of tolerance is imperceptible and keeps animations smooth.
+        guard abs(h - screenHeight) > 3 else { return }
         // Always apply a probe measurement instantly. It lands a frame *after* the
         // content changed, so animating it would teleport (content jumps in, then
         // the frame eases up to it). Smooth animation happens only when we already

@@ -425,7 +425,9 @@ private struct AddField: View {
     var body: some View {
         VStack(spacing: 0) {
             titleRow
-            if state.showDraftNotes { notesBlock }
+            // .identity → no fade; the notes block is revealed purely by the panel
+            // growing (the bodyArea clip), which avoids the opacity flash.
+            if state.showDraftNotes { notesBlock.transition(.identity) }
         }
         .padding(.vertical, 7).padding(.horizontal, 9)
         .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.06)))
@@ -464,9 +466,11 @@ private struct AddField: View {
             if state.reminderLists.count > 1 { listMenu }
 
             // Toggle an inline notes field for the new reminder (animated grow).
+            // Don't auto-focus it: focusing mid-grow attaches the text field editor
+            // before layout settles (a stray flash nearby) and flips the border blue
+            // (the opacity flash). Click the field to type — cursor on demand.
             Button {
                 withAnimation(.easeInOut(duration: 0.3)) { state.showDraftNotes.toggle() }
-                notesFocused = state.showDraftNotes
             } label: {
                 Image(systemName: state.showDraftNotes ? "note.text" : "note.text.badge.plus")
                     .font(.system(size: 13))
