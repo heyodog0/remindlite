@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import EventKit
+import AppKit
 
 /// Central observable state. Owns the EventKit wrapper, the in-memory task list,
 /// and refreshes when Reminders changes underneath us (EKEventStoreChanged).
@@ -11,13 +12,21 @@ final class AppState: ObservableObject {
     @Published var tab: PanelTab = .reminders {
         didSet {
             if tab != .calendar { showingCalendarFilter = false }
+            if tab != .reminders { showingListFilter = false }
             applyCachedHeight()
         }
     }
     @Published var access: RemindersStore.Access = .unknown          // reminders
     @Published var calendarAccess: RemindersStore.Access = .unknown  // events
     @Published var panelVisible = false
-    @Published var draft: String = ""            // the "add a reminder" field
+    @Published var draft: String = ""            // the "add a reminder" title field
+    @Published var draftNotes: String = ""       // optional notes for the new reminder
+    // Shared (not @State in AddField) so the hidden height-probe copy expands too,
+    // otherwise the panel measures the collapsed add field and won't grow.
+    @Published var showDraftNotes = false { didSet { applyCachedHeight() } }
+    /// Pre-measured height the notes field adds, so the first toggle animates to a
+    /// known height (smooth) instead of snapping — same idea as the editor's rows.
+    var draftNotesRowHeight: CGFloat = 0 { didSet { recacheListHeights() } }
     @Published var showCompleted = false         // Completed section collapsed by default
 
     // MARK: per-calendar event filter
@@ -34,6 +43,12 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(Array(hiddenCalendarIDs), forKey: hiddenCalendarsKey) }
     }
 
+    /// Group the Calendar tab by day or by calendar (persisted).
+    @Published var eventGroupMode: GroupMode =
+        GroupMode(rawValue: UserDefaults.standard.string(forKey: "eventGroupMode") ?? "") ?? .date {
+        didSet { UserDefaults.standard.set(eventGroupMode.rawValue, forKey: "eventGroupMode") }
+    }
+
     func isCalendarShown(_ id: String) -> Bool { !hiddenCalendarIDs.contains(id) }
 
     /// Flip a calendar's visibility and re-fetch so the change shows immediately.
@@ -41,6 +56,111 @@ final class AppState: ObservableObject {
         if hiddenCalendarIDs.contains(id) { hiddenCalendarIDs.remove(id) }
         else { hiddenCalendarIDs.insert(id) }
         refreshEvents()
+    }
+
+    /// Recolor a calendar, then re-fetch so events + dots pick up the new color.
+    /// (May silently no-op on calendars EventKit won't let us recolor.)
+    func setCalendarColor(_ id: String, _ color: NSColor) {
+        store.setCalendarColor(id, cgColor: color.cgColor) { [weak self] in self?.refreshEvents() }
+    }
+
+    // MARK: per-list reminder support (assign / filter)
+    //
+    // Reminder "lists" are EKCalendars of type .reminder. We track the available
+    // lists, which list new reminders go to, and which lists are hidden from view
+    // (persisted, hidden-by-default-off, mirroring the calendar filter).
+    @Published var reminderLists: [CalendarOption] = []
+    @Published var showingListFilter = false { didSet { applyCachedHeight() } }
+    /// List new reminders are filed into ("" = resolve to the system default).
+    @Published var newListID: String = UserDefaults.standard.string(forKey: "newReminderListID") ?? "" {
+        didSet { UserDefaults.standard.set(newListID, forKey: "newReminderListID") }
+    }
+    private let hiddenListsKey = "hiddenReminderListIDs"
+    @Published var hiddenListIDs: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "hiddenReminderListIDs") ?? []) {
+        didSet { UserDefaults.standard.set(Array(hiddenListIDs), forKey: hiddenListsKey) }
+    }
+    @Published var editListID: String = ""   // the editor's selected list
+
+    // New-list composer (in the Lists filter screen).
+    @Published var reminderSources: [SourceOption] = []
+    @Published var newListName: String = ""
+    @Published var newListSourceID: String = ""
+    @Published var listError: String? = nil
+
+    /// Group the Reminders tab by due date or by list (persisted).
+    @Published var groupMode: GroupMode =
+        GroupMode(rawValue: UserDefaults.standard.string(forKey: "reminderGroupMode") ?? "") ?? .date {
+        didSet { UserDefaults.standard.set(groupMode.rawValue, forKey: "reminderGroupMode") }
+    }
+
+    func isListShown(_ id: String) -> Bool { !hiddenListIDs.contains(id) }
+
+    /// Recolor a list, then re-fetch so rows and dots pick up the new color.
+    func setListColor(_ id: String, _ color: NSColor) {
+        store.setCalendarColor(id, cgColor: color.cgColor) { [weak self] in self?.refresh() }
+    }
+
+    func toggleList(_ id: String) {
+        if hiddenListIDs.contains(id) { hiddenListIDs.remove(id) }
+        else { hiddenListIDs.insert(id) }
+        refresh()
+    }
+
+    /// Display name + color for a list id (for chips/menus); falls back gracefully.
+    func listOption(_ id: String) -> CalendarOption? {
+        reminderLists.first { $0.id == id }
+    }
+
+    /// Snapshot the available reminder lists; keep newListID pointing at a real one.
+    private func loadReminderLists() {
+        reminderLists = store.reminderLists().map {
+            CalendarOption(id: $0.calendarIdentifier,
+                           title: $0.title,
+                           color: $0.cgColor.map { Color(cgColor: $0) } ?? .secondary,
+                           account: $0.source?.title ?? "")
+        }
+        .sorted { ($0.account.localizedLowercase, $0.title.localizedLowercase)
+                < ($1.account.localizedLowercase, $1.title.localizedLowercase) }
+        if newListID.isEmpty || !reminderLists.contains(where: { $0.id == newListID }) {
+            newListID = store.defaultReminderListID() ?? reminderLists.first?.id ?? ""
+        }
+        reminderSources = store.reminderSources()
+            .map { SourceOption(id: $0.sourceIdentifier, title: $0.title) }
+        if newListSourceID.isEmpty || !reminderSources.contains(where: { $0.id == newListSourceID }) {
+            newListSourceID = store.defaultReminderSourceID() ?? reminderSources.first?.id ?? ""
+        }
+    }
+
+    /// Create a reminder list from the composer; on success select it for new
+    /// reminders and re-fetch so it appears, on failure surface a brief note.
+    func createList() {
+        let name = newListName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        let src = newListSourceID.isEmpty ? nil : newListSourceID
+        store.createReminderList(title: name, sourceID: src) { [weak self] newID in
+            guard let self else { return }
+            if let newID {
+                self.newListName = ""
+                self.listError = nil
+                self.hiddenListIDs.remove(newID)   // ensure it's visible
+                self.refresh()
+                self.newListID = newID             // file new reminders here next
+            } else {
+                self.showListError("Couldn’t create that list")
+            }
+        }
+    }
+
+    private var listErrorToken = 0
+    private func showListError(_ text: String) {
+        listError = text
+        listErrorToken += 1
+        let token = listErrorToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, self.listErrorToken == token else { return }
+            self.listError = nil
+        }
     }
 
     /// Snapshot the available event calendars (account, color, name) for the UI.
@@ -92,7 +212,8 @@ final class AppState: ObservableObject {
     /// Identity of the screen currently shown — list, editor, or calendar.
     private var screenKey: String {
         if tab == .calendar { return showingCalendarFilter ? "calFilter" : "calendar" }
-        if editingID == nil { return "list" }
+        if showingListFilter { return "listFilter" }
+        if editingID == nil { return "list|\(showDraftNotes)" }
         // The editor's height depends on whether the due-date/time sections are
         // shown, so cache each combination separately — that way toggling them
         // sizes the panel synchronously (like navigation) instead of a frame late.
@@ -125,11 +246,23 @@ final class AppState: ObservableObject {
         cachedScreenHeights["editor|true|true"]   = base + dueDelta + timeDelta
     }
 
+    /// Derive both list heights (notes off/on) from whichever we have plus the
+    /// measured notes-row height, so the first notes toggle animates smoothly.
+    private func recacheListHeights() {
+        guard tab == .reminders, editingID == nil, !showingListFilter else { return }
+        guard draftNotesRowHeight > 0, let current = cachedScreenHeights[screenKey] else { return }
+        var base = current
+        if showDraftNotes { base -= draftNotesRowHeight }
+        cachedScreenHeights["list|false"] = base
+        cachedScreenHeights["list|true"]  = base + draftNotesRowHeight
+    }
+
     /// Called by the hidden probe with the current screen's natural body height.
     func reportScreenHeight(_ h: CGFloat) {
         guard h > 0 else { return }
         cachedScreenHeights[screenKey] = h
         recacheEditorHeights()
+        recacheListHeights()
         guard abs(h - screenHeight) > 0.5 else { return }
         // Always apply a probe measurement instantly. It lands a frame *after* the
         // content changed, so animating it would teleport (content jumps in, then
@@ -162,6 +295,7 @@ final class AppState: ObservableObject {
     @Published var listInnerHeight: CGFloat = 0
     @Published var eventInnerHeight: CGFloat = 0
     @Published var calendarFilterInnerHeight: CGFloat = 0
+    @Published var reminderListFilterInnerHeight: CGFloat = 0
 
     /// Task-editor state. `editingID != nil` shows the detail/edit view.
     @Published var editingID: String? {
@@ -241,7 +375,7 @@ final class AppState: ObservableObject {
         // Every calendar hidden → show nothing (an empty predicate list is
         // ambiguous, so short-circuit). No calendars loaded yet → fetch all.
         if !eventCalendars.isEmpty && enabledIDs.isEmpty { events = []; return }
-        let cals = enabledIDs.isEmpty ? nil : store.calendars(withIDs: enabledIDs)
+        let cals = enabledIDs.isEmpty ? nil : store.calendars(withIDs: enabledIDs, entity: .event)
         store.fetchEvents(days: eventWindowDays, calendars: cals) { [weak self] items in
             self?.events = items
         }
@@ -250,7 +384,12 @@ final class AppState: ObservableObject {
     func refresh() {
         access = store.access
         guard access == .granted else { return }
-        store.fetchAll { [weak self] items in
+        loadReminderLists()
+        let enabledIDs = reminderLists.map(\.id).filter { !hiddenListIDs.contains($0) }
+        // Every list hidden → show nothing; none loaded yet → fetch all.
+        if !reminderLists.isEmpty && enabledIDs.isEmpty { tasks = []; optimistic = [:]; return }
+        let cals = enabledIDs.isEmpty ? nil : store.calendars(withIDs: enabledIDs, entity: .reminder)
+        store.fetchAll(calendars: cals) { [weak self] items in
             guard let self else { return }
             self.tasks = items
             // Drop optimistic overrides once the fetch agrees with them.
@@ -273,8 +412,13 @@ final class AppState: ObservableObject {
 
     func add() {
         let text = draft
+        let notes = draftNotes
         draft = ""
-        store.add(title: text) { [weak self] in self?.refresh() }
+        draftNotes = ""
+        store.add(title: text, listID: newListID.isEmpty ? nil : newListID,
+                  notes: notes) { [weak self] in
+            self?.refresh()
+        }
     }
 
     /// Delete a reminder, optimistically removing it from the list first.
@@ -294,6 +438,7 @@ final class AppState: ObservableObject {
         editDue = item.due ?? defaultDueDate()
         editHasTime = item.hasTime
         editPriority = item.priority
+        editListID = item.listID
         editingID = item.id
     }
 
@@ -309,6 +454,7 @@ final class AppState: ObservableObject {
         // snapped again when refresh() re-sorted it in.
         if let i = tasks.firstIndex(where: { $0.id == id }) {
             let old = tasks[i]
+            let list = listOption(editListID)
             tasks[i] = TaskItem(
                 id: old.id,
                 title: editTitle.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -317,12 +463,15 @@ final class AppState: ObservableObject {
                 priority: editPriority,
                 notes: editNotes.isEmpty ? nil : editNotes,
                 completed: old.completed,
-                completionDate: old.completionDate)
+                completionDate: old.completionDate,
+                listID: editListID,
+                listName: list?.title ?? old.listName,
+                listColor: list?.color ?? old.listColor)
         }
         editingID = nil
         store.update(id: id, title: editTitle, notes: editNotes,
                      due: editHasDue ? editDue : nil, hasTime: editHasTime,
-                     priority: editPriority) { [weak self] in
+                     priority: editPriority, listID: editListID) { [weak self] in
             self?.refresh()
         }
     }
@@ -377,11 +526,25 @@ final class AppState: ObservableObject {
 
     // MARK: - derived
 
-    /// Open tasks grouped into due-date sections; empty buckets omitted.
-    var sections: [(bucket: Bucket, items: [TaskItem])] {
-        Bucket.allCases.compactMap { b in
-            let items = tasks.filter { !isCompleted($0) && bucket(for: $0.due) == b }
-            return items.isEmpty ? nil : (b, items)
+    /// Open tasks grouped into sections — by due-date bucket or by list, per
+    /// groupMode. Empty sections are omitted; list sections follow list order.
+    var sections: [ReminderSection] {
+        let open = tasks.filter { !isCompleted($0) }
+        switch groupMode {
+        case .date:
+            return Bucket.allCases.compactMap { b in
+                let items = open.filter { bucket(for: $0.due) == b }
+                return items.isEmpty ? nil
+                    : ReminderSection(id: "bucket-\(b.rawValue)", title: b.title,
+                                      accent: b.accent, items: items)
+            }
+        case .entity:
+            return reminderLists.compactMap { list in
+                let items = open.filter { $0.listID == list.id }
+                return items.isEmpty ? nil
+                    : ReminderSection(id: list.id, title: list.title,
+                                      accent: list.color, items: items)
+            }
         }
     }
 
@@ -391,7 +554,7 @@ final class AppState: ObservableObject {
     }
 
     /// Events grouped by day (already chronologically sorted) for the Calendar tab.
-    var eventDays: [(day: Date, header: String, items: [EventItem])] {
+    private var eventDays: [(day: Date, header: String, items: [EventItem])] {
         let cal = Calendar.current
         var order: [Date] = []
         var byDay: [Date: [EventItem]] = [:]
@@ -401,6 +564,25 @@ final class AppState: ObservableObject {
             byDay[key, default: []].append(e)
         }
         return order.map { ($0, dayHeader($0), byDay[$0] ?? []) }
+    }
+
+    /// Events grouped per eventGroupMode — by day (default) or by calendar. Day
+    /// sections have no accent; calendar sections take the calendar's color and
+    /// follow the calendar order.
+    var eventSections: [EventSection] {
+        switch eventGroupMode {
+        case .date:
+            return eventDays.map {
+                EventSection(id: "day-\($0.day.timeIntervalSinceReferenceDate)",
+                             title: $0.header, accent: .secondary, items: $0.items)
+            }
+        case .entity:
+            return eventCalendars.compactMap { c in
+                let items = events.filter { $0.calendarID == c.id }
+                return items.isEmpty ? nil
+                    : EventSection(id: c.id, title: c.title, accent: c.color, items: items)
+            }
+        }
     }
 
     /// Menu-bar badge: open overdue + due-today (completed items don't count).

@@ -164,8 +164,11 @@ final class StatusController: NSObject, NSWindowDelegate {
         let current = panel.frame.height
         guard abs(target - current) > 0.5 else { return }
         if !panelSettled || target > current {
+            // Grow immediately (the new space is clear, giving the SwiftUI glass
+            // room to animate into it).
             setWindow(target)
         } else {
+            // Shrink only after the glass has finished collapsing.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) { [weak self] in
                 guard let self, self.panel.isVisible else { return }
                 self.setWindow(self.panelHeight())
@@ -173,9 +176,12 @@ final class StatusController: NSObject, NSWindowDelegate {
         }
     }
 
+    private func frame(for h: CGFloat) -> NSRect {
+        NSRect(x: originX, y: pinnedTopY - h, width: width, height: h)
+    }
+
     private func setWindow(_ h: CGFloat) {
-        panel.setFrame(NSRect(x: originX, y: pinnedTopY - h, width: width, height: h),
-                       display: true)
+        panel.setFrame(frame(for: h), display: true)
     }
 
     private func close() {

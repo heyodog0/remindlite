@@ -10,6 +10,9 @@ struct TaskItem: Identifiable, Equatable {
     let notes: String?
     let completed: Bool
     let completionDate: Date?
+    let listID: String      // EKCalendar.calendarIdentifier of the reminder's list
+    let listName: String
+    let listColor: Color
 
     // Equatable is synthesized over *all* fields so SwiftUI redraws a row when
     // any visible field changes (title, notes, due, priority, …). A hand-written
@@ -25,6 +28,7 @@ struct EventItem: Identifiable, Equatable {
     let start: Date
     let end: Date
     let isAllDay: Bool
+    let calendarID: String
     let calendarName: String
     let calendarColor: Color
     let location: String?
@@ -40,12 +44,49 @@ struct CalendarOption: Identifiable, Equatable {
     let account: String     // EKSource.title — iCloud, a Google account, Subscriptions…
 }
 
+/// An account (EKSource) a new reminder list can be created in.
+struct SourceOption: Identifiable, Equatable {
+    let id: String          // EKSource.sourceIdentifier
+    let title: String       // iCloud, On My Mac, a Google account…
+}
+
+/// How a tab groups items: chronologically (date) or by their container
+/// (`entity` = reminder list on the Reminders tab, calendar on the Calendar tab).
+enum GroupMode: String { case date, entity }
+
+/// A rendered group of reminders (a due-date bucket or a list), title + accent.
+struct ReminderSection: Identifiable {
+    let id: String
+    let title: String
+    let accent: Color
+    let items: [TaskItem]
+}
+
+/// A rendered group of events (a day or a calendar), title + accent.
+struct EventSection: Identifiable {
+    let id: String
+    let title: String
+    let accent: Color
+    let items: [EventItem]
+}
+
 /// Which list the panel is showing. (Named PanelTab to avoid SwiftUI's `Tab`.)
 enum PanelTab: String, CaseIterable, Identifiable {
     case reminders, calendar
     var id: String { rawValue }
     var title: String { self == .reminders ? "Reminders" : "Calendar" }
     var icon: String { self == .reminders ? "checklist" : "calendar" }
+}
+
+/// Reminders-style priority marks: low `!`, medium `!!`, high `!!!` (nil = none).
+/// EventKit priority is 1–4 high, 5 medium, 6–9 low, 0 none (the editor uses 1/5/9).
+func priorityMarks(_ p: Int) -> (text: String, color: Color)? {
+    switch p {
+    case 1...4: return ("!!!", .red)
+    case 5:     return ("!!", .orange)
+    case 6...9: return ("!", .orange)
+    default:    return nil
+    }
 }
 
 /// Compact time range for an event row, e.g. "All day", "3:00 – 4:00 PM".

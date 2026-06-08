@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct MenuContent: View {
     @EnvironmentObject var state: AppState
@@ -22,8 +23,8 @@ struct MenuContent: View {
         }
         .padding(12)
         .frame(width: panelWidth, alignment: .top)
-        // The glass — native NSGlassEffectView behind the content, hugging it and
-        // animating its height with the body (all in SwiftUI; the window is clear).
+        // The glass hugs the content and animates its own height with the body
+        // (smooth toggles). The window grows under it.
         .background(GlassBackground().clipShape(glassShape))
         .overlay(glassShape.strokeBorder(.white.opacity(0.08), lineWidth: 0.8))
         .clipShape(glassShape)
@@ -47,6 +48,8 @@ struct MenuContent: View {
         }
         .animation(.easeInOut(duration: 0.3), value: state.editingID)
         .animation(.easeInOut(duration: 0.3), value: state.tab)
+        .animation(.easeInOut(duration: 0.3), value: state.showingListFilter)
+        .animation(.easeInOut(duration: 0.3), value: state.showingCalendarFilter)
         .frame(height: state.screenHeight > 0 ? state.screenHeight : nil, alignment: .top)
         .clipped()
         .animation(.easeInOut(duration: 0.3), value: state.screenHeight)
@@ -67,14 +70,16 @@ struct MenuContent: View {
     /// Each branch carries the transition so insert/remove animates.
     @ViewBuilder
     private var activeScreen: some View {
-        // The incoming screen fades + scales in over the full duration; the
-        // outgoing one fades out quickly so its content (e.g. the tall month
-        // calendar) doesn't linger over the screen replacing it.
+        // Plain cross-fade: the incoming screen fades in, the outgoing one fades
+        // out quickly. (No scale — scaling the incoming list made the rows grow
+        // in, which read as a subtle wobble.)
         let move = AnyTransition.asymmetric(
-            insertion: .opacity.combined(with: .scale(scale: 0.98, anchor: .top)),
+            insertion: .opacity,
             removal: .opacity.animation(.easeOut(duration: 0.12)))
         if state.tab == .reminders {
-            if state.editingID != nil {
+            if state.showingListFilter {
+                ListFilter().transition(move)
+            } else if state.editingID != nil {
                 TaskDetail()
                     .transition(move)
             } else {
@@ -110,6 +115,20 @@ private struct TabBar: View {
     @Namespace private var pill
     private let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
 
+    private var filterAvailable: Bool {
+        state.tab == .calendar ? state.calendarAccess == .granted
+                               : state.access == .granted
+    }
+    private var filterOn: Bool {
+        state.tab == .calendar ? state.showingCalendarFilter : state.showingListFilter
+    }
+    private var groupMode: GroupMode {
+        state.tab == .calendar ? state.eventGroupMode : state.groupMode
+    }
+    private func setGroup(_ m: GroupMode) {
+        if state.tab == .calendar { state.eventGroupMode = m } else { state.groupMode = m }
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             HStack(spacing: 2) {
@@ -127,21 +146,43 @@ private struct TabBar: View {
             .overlay(shape.strokeBorder(.white.opacity(0.10), lineWidth: 0.8))
             .animation(.easeInOut(duration: 0.22), value: state.tab)
 
-            // Calendar tab only: choose which calendars' events appear.
-            if state.tab == .calendar && state.calendarAccess == .granted {
+            // Group by date (due date / day) or by container (list / calendar).
+            // A plain toggle (not a menu): two modes, so one click switches. Fixed
+            // width keeps the calendar↔list glyph swap from nudging the row.
+            if filterAvailable {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.3)) {
-                        state.showingCalendarFilter.toggle()
+                    withAnimation(.snappy(duration: 0.25)) {
+                        setGroup(groupMode == .date ? .entity : .date)
                     }
                 } label: {
-                    Image(systemName: state.showingCalendarFilter
-                          ? "line.3.horizontal.decrease.circle.fill"
-                          : "line.3.horizontal.decrease.circle")
+                    Image(systemName: groupMode == .entity ? "list.bullet.indent" : "calendar")
                         .font(.system(size: 13, weight: .medium))
+                        .frame(width: 20)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(state.showingCalendarFilter ? Color.accentColor : .secondary)
-                .help("Choose calendars")
+                .foregroundStyle(.secondary)
+                .help(state.tab == .calendar
+                      ? (groupMode == .entity ? "Grouped by calendar — click for by day"
+                                              : "Grouped by day — click for by calendar")
+                      : (groupMode == .entity ? "Grouped by list — click for by date"
+                                              : "Grouped by date — click for by list"))
+            }
+
+            // Filter: choose which lists (Reminders) or calendars (Calendar) show.
+            if filterAvailable {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        if state.tab == .calendar { state.showingCalendarFilter.toggle() }
+                        else { state.showingListFilter.toggle() }
+                    }
+                } label: {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 20)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(filterOn ? Color.accentColor : .secondary)
+                .help(state.tab == .calendar ? "Choose calendars" : "Choose lists")
             }
 
             Button {
@@ -167,10 +208,12 @@ private struct TabSegment: View {
 
     var body: some View {
         Button(action: action) {
-            Label(tab.title, systemImage: tab.icon)
-                .font(.system(size: 12, weight: .medium))
-                .padding(.vertical, 5).padding(.horizontal, 9)
+            // Glyph only: keeps the segments compact next to the three trailing
+            // controls (the text was wrapping/truncating when squeezed).
+            Image(systemName: tab.icon)
+                .font(.system(size: 13, weight: .medium))
                 .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
                 .background {
                     // The single shared pill — matchedGeometryEffect slides it
                     // from one segment to the other when `selected` moves.
@@ -184,6 +227,7 @@ private struct TabSegment: View {
                 .contentShape(shape)
         }
         .buttonStyle(.plain)
+        .help(tab.title)
     }
 }
 
@@ -198,8 +242,8 @@ private struct TaskList: View {
                     if state.sections.isEmpty && state.completedItems.isEmpty {
                         EmptyState()
                     }
-                    ForEach(state.sections, id: \.bucket.id) { section in
-                        Section(title: section.bucket.title, accent: section.bucket.accent,
+                    ForEach(state.sections) { section in
+                        Section(title: section.title, accent: section.accent,
                                 items: section.items)
                     }
                     if !state.completedItems.isEmpty {
@@ -276,6 +320,8 @@ private struct TaskRow: View {
     @State private var hovering = false
 
     private var done: Bool { state.isCompleted(item) }
+    // Only surface the list when there's more than one to distinguish.
+    private var showList: Bool { state.reminderLists.count > 1 && !item.listName.isEmpty }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 9) {
@@ -296,8 +342,9 @@ private struct TaskRow: View {
             } label: {
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 5) {
-                        if item.priority == 1 {
-                            Text("!!!").font(.system(size: 11, weight: .bold)).foregroundStyle(.red)
+                        if let pri = priorityMarks(item.priority) {
+                            Text(pri.text).font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(pri.color)
                         }
                         Text(item.title)
                             .font(.system(size: 13))
@@ -305,10 +352,25 @@ private struct TaskRow: View {
                             .foregroundStyle(done ? .secondary : .primary)
                             .lineLimit(2)
                     }
-                    if let label = dueLabel(item.due, hasTime: item.hasTime) {
-                        Text(label)
-                            .font(.system(size: 11))
-                            .foregroundStyle(bucket(for: item.due) == .overdue ? .red : .secondary)
+                    // Metadata line: list (dot + name, when more than one list) and
+                    // due label, joined by a dot separator.
+                    if showList || dueLabel(item.due, hasTime: item.hasTime) != nil {
+                        HStack(spacing: 5) {
+                            if showList {
+                                Circle().fill(item.listColor).frame(width: 6, height: 6)
+                                Text(item.listName)
+                                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            if let label = dueLabel(item.due, hasTime: item.hasTime) {
+                                if showList {
+                                    Text("·").font(.system(size: 11)).foregroundStyle(.secondary)
+                                }
+                                Text(label)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(bucket(for: item.due) == .overdue ? .red : .secondary)
+                            }
+                        }
                     }
                     if let notes = item.notes, !notes.isEmpty {
                         Text(notes)
@@ -352,8 +414,41 @@ private struct TaskRow: View {
 private struct AddField: View {
     @EnvironmentObject var state: AppState
     @FocusState private var focused: Bool
+    @FocusState private var notesFocused: Bool
+
+    private func submit() {
+        guard !state.draft.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        state.add()
+        focused = true                // keep focus to add another
+    }
 
     var body: some View {
+        VStack(spacing: 0) {
+            titleRow
+            if state.showDraftNotes { notesBlock }
+        }
+        .padding(.vertical, 7).padding(.horizontal, 9)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.06)))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .strokeBorder((focused || notesFocused) ? .blue.opacity(0.5) : .white.opacity(0.12), lineWidth: 0.8))
+        // Always-measure the notes block (hidden) so the first toggle animates to a
+        // known height instead of snapping.
+        .background(alignment: .top) {
+            notesMeasure
+                .fixedSize(horizontal: false, vertical: true)
+                .hidden()
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) {
+                    state.draftNotesRowHeight = $0
+                }
+        }
+        // Tapping anywhere in the pill focuses the title field (bigger hit target).
+        .contentShape(Rectangle())
+        .onTapGesture { focused = true }
+        // Press Escape to dismiss the cursor (resign focus) without closing the panel.
+        .onExitCommand { focused = false; notesFocused = false }
+    }
+
+    private var titleRow: some View {
         HStack(spacing: 8) {
             Image(systemName: "plus.circle.fill")
                 .font(.system(size: 14))
@@ -363,18 +458,75 @@ private struct AddField: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .focused($focused)
-                .onSubmit {
-                    state.add()
-                    focused = true            // keep focus to add another
-                }
+                .onSubmit { submit() }
+
+            // Which list the new reminder is filed into (remembers the choice).
+            if state.reminderLists.count > 1 { listMenu }
+
+            // Toggle an inline notes field for the new reminder (animated grow).
+            Button {
+                withAnimation(.easeInOut(duration: 0.3)) { state.showDraftNotes.toggle() }
+                notesFocused = state.showDraftNotes
+            } label: {
+                Image(systemName: state.showDraftNotes ? "note.text" : "note.text.badge.plus")
+                    .font(.system(size: 13))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(state.showDraftNotes ? Color.accentColor : .secondary)
+            .help(state.showDraftNotes ? "Hide notes" : "Add notes")
         }
-        .padding(.vertical, 7).padding(.horizontal, 9)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.06)))
-        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
-            .strokeBorder(focused ? .blue.opacity(0.5) : .white.opacity(0.12), lineWidth: 0.8))
-        // Tapping anywhere in the pill focuses the field (bigger hit target).
-        .contentShape(Rectangle())
-        .onTapGesture { focused = true }
+    }
+
+    private var notesBlock: some View {
+        VStack(spacing: 6) {
+            Divider().opacity(0.15)
+            TextField("Notes", text: $state.draftNotes)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .focused($notesFocused)
+                .onSubmit { submit() }
+        }
+        .padding(.top, 6)
+    }
+
+    /// Layout-identical, non-interactive copy of `notesBlock` for height probing.
+    private var notesMeasure: some View {
+        VStack(spacing: 6) {
+            Divider().opacity(0.15)
+            TextField("Notes", text: .constant(""))
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+        }
+        .padding(.top, 6)
+    }
+
+    /// Compact list chooser: a colored dot + name that opens a checkmarked menu.
+    private var listMenu: some View {
+        Menu {
+            ForEach(state.reminderLists) { list in
+                Button { state.newListID = list.id } label: {
+                    if state.newListID == list.id {
+                        Label(list.title, systemImage: "checkmark")
+                    } else {
+                        Text(list.title)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Circle().fill(state.listOption(state.newListID)?.color ?? .secondary)
+                    .frame(width: 8, height: 8)
+                Text(state.listOption(state.newListID)?.title ?? "List")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .lineLimit(1).frame(maxWidth: 80)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
     }
 }
 
@@ -533,7 +685,7 @@ private struct TaskDetail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             // Header
-            HStack {
+            HStack(alignment: .center) {
                 Button { state.cancelEdit() } label: {
                     Label("Back", systemImage: "chevron.left")
                         .font(.system(size: 13, weight: .medium))
@@ -544,8 +696,9 @@ private struct TaskDetail: View {
                     Text("Save")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white)
-                        .padding(.vertical, 4).padding(.horizontal, 15)
-                        .background(Capsule().fill(Color.blue.opacity(canSave ? 0.8 : 0.3)))
+                        .frame(height: 26)                 // fixed height ⇒ text dead-centered
+                        .padding(.horizontal, 16)
+                        .background(Capsule().fill(Color.blue.opacity(canSave ? 0.85 : 0.3)))
                 }
                 .buttonStyle(.plain).disabled(!canSave)
             }
@@ -565,6 +718,39 @@ private struct TaskDetail: View {
             }
             .background(field.fill(.white.opacity(0.05)))
             .overlay(field.strokeBorder(.white.opacity(0.08), lineWidth: 0.8))
+
+            // List — which Reminders list this task lives in (move it here).
+            if state.reminderLists.count > 1 {
+                HStack {
+                    Label("List", systemImage: "list.bullet")
+                        .font(.system(size: 13))
+                    Spacer()
+                    Menu {
+                        ForEach(state.reminderLists) { list in
+                            Button { state.editListID = list.id } label: {
+                                if state.editListID == list.id {
+                                    Label(list.title, systemImage: "checkmark")
+                                } else {
+                                    Text(list.title)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Circle().fill(state.listOption(state.editListID)?.color ?? .secondary)
+                                .frame(width: 8, height: 8)
+                            Text(state.listOption(state.editListID)?.title ?? "List")
+                                .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 9)).foregroundStyle(.secondary)
+                        }
+                    }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                }
+                .padding(.vertical, 9).padding(.horizontal, 10)
+                .background(field.fill(.white.opacity(0.05)))
+                .overlay(field.strokeBorder(.white.opacity(0.08), lineWidth: 0.8))
+            }
 
             // Due date — quick picks, an inline month calendar (tap a day; no
             // editable digit fields, no stuck highlight), and a dropdown time
@@ -634,7 +820,9 @@ private struct TaskDetail: View {
             .buttonStyle(.plain).foregroundStyle(.red)
             .background(field.fill(.red.opacity(0.10)))
         }
-        .padding(.top, 2)
+        // Breathing room so the Back/Save header isn't cramped against the chrome
+        // divider above it (matches the filter screens' header spacing).
+        .padding(.top, 12)
     }
 }
 
@@ -682,6 +870,32 @@ private struct AccessMessage: View {
     }
 }
 
+/// Shared header for the filter screens: a back button pinned left with the
+/// title truly centered (ZStack, so the back button's width can't shove it off).
+private struct FilterHeader: View {
+    let title: String
+    let onBack: () -> Void
+
+    var body: some View {
+        ZStack {
+            Text(title)
+                .font(.system(size: 14, weight: .semibold))
+                .frame(maxWidth: .infinity)
+            HStack {
+                Button(action: onBack) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "chevron.left").font(.system(size: 12, weight: .semibold))
+                        Text("Back").font(.system(size: 13))
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                Spacer()
+            }
+        }
+    }
+}
+
 /// Per-calendar visibility filter for the Calendar tab. Lists every event
 /// calendar (grouped by account) with a toggle; hidden ones are excluded from
 /// the event fetch. EventKit has no visibility API, so the choice is RemindLite's
@@ -691,41 +905,35 @@ private struct CalendarFilter: View {
     private let scrollCap: CGFloat = 360
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.3)) { state.showingCalendarFilter = false }
-                } label: {
-                    Label("Back", systemImage: "chevron.left")
-                        .font(.system(size: 13, weight: .medium))
-                }
-                .buttonStyle(.plain).foregroundStyle(.secondary)
-                Spacer()
-                Text("Calendars").font(.system(size: 13, weight: .semibold))
-                Spacer()
-                Color.clear.frame(width: 40, height: 1)   // balance the back button
+        VStack(alignment: .leading, spacing: 0) {
+            FilterHeader(title: "Calendars") {
+                withAnimation(.easeInOut(duration: 0.3)) { state.showingCalendarFilter = false }
             }
+            .padding(.vertical, 12)
+            Divider().opacity(0.35)
 
             if state.eventCalendars.isEmpty {
                 Text("No calendars found")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(.vertical, 20)
+                    .frame(maxWidth: .infinity).padding(.vertical, 24)
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 14) {
                         ForEach(accounts, id: \.self) { account in
-                            VStack(alignment: .leading, spacing: 4) {
+                            VStack(alignment: .leading, spacing: 5) {
                                 Text(account.uppercased())
                                     .font(.system(size: 10, weight: .bold))
                                     .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 4)
+                                    .padding(.horizontal, 2)
                                 ForEach(state.eventCalendars.filter { $0.account == account }) { cal in
-                                    CalendarToggleRow(cal: cal)
+                                    FilterRow(option: cal, shown: state.isCalendarShown(cal.id),
+                                              toggle: { state.toggleCalendar(cal.id) },
+                                              onColorPick: { c in state.setCalendarColor(cal.id, c) })
                                 }
                             }
                         }
                     }
-                    .padding(.vertical, 4)
+                    .padding(.top, 10).padding(.bottom, 4)
                     .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) {
                         state.calendarFilterInnerHeight = $0
                     }
@@ -744,30 +952,180 @@ private struct CalendarFilter: View {
     }
 }
 
-private struct CalendarToggleRow: View {
-    @EnvironmentObject var state: AppState
-    let cal: CalendarOption
-
-    private var shown: Bool { state.isCalendarShown(cal.id) }
+/// One toggle row in a filter screen (a calendar or a reminder list). Shared by
+/// CalendarFilter and ListFilter. When `onColorPick` is set (reminder lists), the
+/// leading dot is tappable to recolor the list; the rest toggles visibility.
+private struct FilterRow: View {
+    let option: CalendarOption
+    let shown: Bool
+    let toggle: () -> Void
+    var onColorPick: ((NSColor) -> Void)? = nil
+    @State private var pickingColor = false
 
     var body: some View {
-        Button { state.toggleCalendar(cal.id) } label: {
-            HStack(spacing: 9) {
-                Circle().fill(cal.color).frame(width: 10, height: 10)
-                Text(cal.title).font(.system(size: 13)).lineLimit(1)
-                    .foregroundStyle(shown ? .primary : .secondary)
-                Spacer(minLength: 8)
-                Image(systemName: shown ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 15))
-                    .foregroundStyle(shown ? Color.blue : .secondary)
+        HStack(spacing: 9) {
+            if let onColorPick {
+                Button { pickingColor = true } label: {
+                    Circle().fill(option.color).frame(width: 12, height: 12)
+                        .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Change color")
+                .popover(isPresented: $pickingColor, arrowEdge: .leading) {
+                    ColorPalette { c in onColorPick(c); pickingColor = false }
+                }
+            } else {
+                Circle().fill(option.color).frame(width: 10, height: 10)
             }
-            .padding(.vertical, 5).padding(.horizontal, 10)
-            .frame(maxWidth: .infinity)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.white.opacity(0.04)))
-            .contentShape(Rectangle())
+
+            Button(action: toggle) {
+                HStack(spacing: 9) {
+                    Text(option.title).font(.system(size: 13)).lineLimit(1)
+                        .foregroundStyle(shown ? .primary : .secondary)
+                    Spacer(minLength: 8)
+                    Image(systemName: shown ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 15))
+                        .foregroundStyle(shown ? Color.blue : .secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, 5).padding(.horizontal, 10)
+        .frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(.white.opacity(0.04)))
+    }
+}
+
+/// A small grid of preset list colors, shown in a popover from a list's dot.
+private struct ColorPalette: View {
+    let pick: (NSColor) -> Void
+    private let colors: [NSColor] = [
+        .systemRed, .systemOrange, .systemYellow, .systemGreen, .systemMint,
+        .systemTeal, .systemCyan, .systemBlue, .systemIndigo, .systemPurple,
+        .systemPink, .systemBrown, .systemGray]
+
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.fixed(24), spacing: 10), count: 5),
+                  spacing: 10) {
+            ForEach(colors.indices, id: \.self) { i in
+                Button { pick(colors[i]) } label: {
+                    Circle().fill(Color(nsColor: colors[i])).frame(width: 22, height: 22)
+                        .overlay(Circle().strokeBorder(.white.opacity(0.3), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(14)
+        .frame(width: 188)
+        .environment(\.colorScheme, .dark)
+    }
+}
+
+/// Per-list visibility filter for the Reminders tab — same shape as CalendarFilter
+/// but over reminder lists. Hidden lists are excluded from the reminder fetch.
+private struct ListFilter: View {
+    @EnvironmentObject var state: AppState
+    private let scrollCap: CGFloat = 360
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            FilterHeader(title: "Lists") {
+                withAnimation(.easeInOut(duration: 0.3)) { state.showingListFilter = false }
+            }
+            .padding(.vertical, 12)
+            Divider().opacity(0.35)
+
+            if state.reminderLists.isEmpty {
+                Text("No lists found")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 24)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(accounts, id: \.self) { account in
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(account.uppercased())
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 2)
+                                ForEach(state.reminderLists.filter { $0.account == account }) { list in
+                                    FilterRow(option: list, shown: state.isListShown(list.id),
+                                              toggle: { state.toggleList(list.id) },
+                                              onColorPick: { c in state.setListColor(list.id, c) })
+                                }
+                            }
+                        }
+                    }
+                    .padding(.top, 10).padding(.bottom, 4)
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) {
+                        state.reminderListFilterInnerHeight = $0
+                    }
+                }
+                .frame(height: min(state.reminderListFilterInnerHeight, scrollCap))
+            }
+
+            newListComposer
+                .padding(.top, 12)
+        }
+        .padding(.top, 2)
+        .animation(.snappy(duration: 0.2), value: state.listError)
+    }
+
+    /// Create a new reminder list — name field + (when >1 account) a source picker.
+    private var newListComposer: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: 14)).foregroundStyle(.secondary)
+                TextField("New list…", text: $state.newListName)
+                    .textFieldStyle(.plain).font(.system(size: 13))
+                    .onSubmit { state.createList() }
+                if state.reminderSources.count > 1 { sourceMenu }
+            }
+            .padding(.vertical, 7).padding(.horizontal, 9)
+            .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(.white.opacity(0.06)))
+            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(.white.opacity(0.12), lineWidth: 0.8))
+
+            if let err = state.listError {
+                Text(err).font(.system(size: 11)).foregroundStyle(.orange)
+                    .transition(.opacity)
+            }
+        }
+    }
+
+    /// Which account a new list is created in (iCloud, On My Mac, …).
+    private var sourceMenu: some View {
+        Menu {
+            ForEach(state.reminderSources) { src in
+                Button { state.newListSourceID = src.id } label: {
+                    if state.newListSourceID == src.id {
+                        Label(src.title, systemImage: "checkmark")
+                    } else {
+                        Text(src.title)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(state.reminderSources.first { $0.id == state.newListSourceID }?.title ?? "Account")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .lineLimit(1).frame(maxWidth: 80)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary)
+            }
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+    }
+
+    private var accounts: [String] {
+        var seen = Set<String>(); var order: [String] = []
+        for c in state.reminderLists where seen.insert(c.account).inserted { order.append(c.account) }
+        return order
     }
 }
 
@@ -777,18 +1135,20 @@ private struct EventList: View {
     private let scrollCap: CGFloat = 440
 
     var body: some View {
+        // By Calendar grouping spans days, so each row shows its own day.
+        let byCalendar = state.eventGroupMode == .entity
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                if state.eventDays.isEmpty {
+                if state.eventSections.isEmpty {
                     NoEvents()
                 }
-                ForEach(state.eventDays, id: \.day) { group in
+                ForEach(state.eventSections) { group in
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(group.header.uppercased())
+                        Text(group.title.uppercased())
                             .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(group.accent)
                             .padding(.horizontal, 4)
-                        ForEach(group.items) { EventRow(event: $0) }
+                        ForEach(group.items) { EventRow(event: $0, showDay: byCalendar) }
                     }
                 }
             }
@@ -801,6 +1161,12 @@ private struct EventList: View {
 
 private struct EventRow: View {
     let event: EventItem
+    var showDay: Bool = false
+
+    private var timeLine: String {
+        showDay ? "\(dayHeader(event.start)) · \(timeRange(event))" : timeRange(event)
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
             RoundedRectangle(cornerRadius: 2, style: .continuous)
@@ -809,7 +1175,7 @@ private struct EventRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(event.title)
                     .font(.system(size: 13)).lineLimit(2)
-                Text(timeRange(event))
+                Text(timeLine)
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                 if let loc = event.location, !loc.isEmpty {
                     Label(loc, systemImage: "mappin")
